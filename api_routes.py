@@ -394,8 +394,14 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "banking_ai_backend_cnic",
-        "authentication": "cnic_based_with_account_selection",
-        "greeting_detection": "enabled",
-        "varied_responses": "enabled"
+        "service": "enhanced_banking_ai_backend",
+        "authentication": "cnic_otp_smart_account_selection",
+        "features": {
+            "greeting_detection": "enabled",
+            "varied_responses": "enabled",
+            "context_filtering": "enabled",
+            "otp_verification": "enabled",
+            "smart_account_selection": "enabled", 
+            "transfer_confirmation": "enabled"
+        }
     }

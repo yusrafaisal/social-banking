@@ -147,6 +147,107 @@ class BankingAIAgent:
             )
         return self.user_memories[account_number]
 
+    # NEW: Banking context enforcement
+    async def is_query_banking_related(self, user_message: str, first_name: str = "") -> Tuple[bool, str]:
+        """Check if query is banking-related and return appropriate response."""
+        
+        banking_keywords = [
+            "balance", "transaction", "transfer", "money", "account", "spend", "spent", "spending",
+            "payment", "deposit", "withdraw", "history", "statement", "save", "saving", "savings",
+            "debit", "credit", "currency", "amount", "pkr", "usd", "dollar", "rupee", "bank",
+            "financial", "finance", "cash", "fund", "funds", "expense", "expenses", "income",
+            "budget", "cost", "costs", "paid", "pay", "purchase", "purchased", "buying", "bought"
+        ]
+        
+        non_banking_indicators = [
+            "president", "weather", "recipe", "movie", "sports", "news", "politics",
+            "celebrity", "music", "song", "game", "food", "restaurant", "travel",
+            "what is", "who is", "define", "meaning", "explain", "tell me about",
+            "how to cook", "directions to", "population of", "capital of"
+        ]
+        
+        message_lower = user_message.lower().strip()
+        
+        # Check for clear non-banking indicators
+        if any(indicator in message_lower for indicator in non_banking_indicators):
+            polite_decline = await self.generate_polite_decline(user_message, first_name)
+            return False, polite_decline
+        
+        # Check for banking keywords
+        if any(keyword in message_lower for keyword in banking_keywords):
+            return True, ""
+        
+        # Check for banking-like phrases
+        banking_phrases = [
+            "how much", "can i afford", "do i have enough", "show me",
+            "last month", "this month", "recent", "latest", "current"
+        ]
+        
+        if any(phrase in message_lower for phrase in banking_phrases):
+            return True, ""
+        
+        # For ambiguous cases, ask LLM to classify
+        classification = await self.classify_query_with_llm(user_message)
+        if not classification:
+            polite_decline = await self.generate_polite_decline(user_message, first_name)
+            return False, polite_decline
+        
+        return True, ""
+
+    async def classify_query_with_llm(self, user_message: str) -> bool:
+        """Use LLM to classify ambiguous queries."""
+        try:
+            classification_prompt = f"""
+            Determine if this query is related to banking/financial services:
+            Query: "{user_message}"
+            
+            Banking topics include: account balance, transactions, transfers, spending analysis, 
+            financial planning, payments, deposits, withdrawals, savings, budgeting.
+            
+            Non-banking topics include: general knowledge, weather, entertainment, cooking, 
+            directions, definitions, current events, celebrity information.
+            
+            Return only "yes" if banking-related, "no" if not banking-related.
+            """
+            
+            response = await llm.ainvoke([SystemMessage(content=classification_prompt)])
+            result = response.content.strip().lower()
+            
+            return result == "yes"
+            
+        except Exception as e:
+            logger.error(f"Error in LLM classification: {e}")
+            # Default to non-banking for safety
+            return False
+
+    async def generate_polite_decline(self, user_message: str, first_name: str) -> str:
+        """Generate polite decline for non-banking queries."""
+        try:
+            decline_prompt = f"""
+            You are Sage, a banking assistant. The user asked about "{user_message}" which is not related to banking.
+            
+            Generate a polite response that:
+            1. Acknowledges their question kindly
+            2. Explains you specialize in banking assistance
+            3. Offers to help with banking needs
+            4. Keep it friendly and not robotic
+            
+            User's name: {first_name}
+            
+            Examples:
+            - "That's an interesting question! I specialize in helping with your banking needs though..."
+            - "I'd love to help, but I'm focused on banking assistance..."
+            - "While I don't have information on that topic, I'm here to help with your banking..."
+            """
+            
+            response = await llm.ainvoke([SystemMessage(content=decline_prompt)])
+            return response.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating polite decline: {e}")
+            polite_name = f" {first_name}" if first_name else ""
+            return f"I appreciate your question{polite_name}! I specialize in helping with banking and financial matters. Is there anything about your account, transactions, or finances I can assist you with today?"
+
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
         """Generate natural LLM responses with varied greetings and natural conversation flow."""
         
@@ -193,6 +294,246 @@ Generate a natural response that fits the context and data provided. Remember to
         except Exception as e:
             logger.error(f"Error generating natural response: {e}")
             return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
+
+    # NEW: OTP Handling Methods
+    async def handle_otp_request(self, first_name: str = "") -> str:
+        """Generate OTP request message after CNIC verification."""
+        try:
+            otp_request_prompt = f"""You are Sage, a banking assistant. The user has successfully verified their CNIC and now needs to provide an OTP for additional security.
+
+Your task:
+1. Congratulate them on successful CNIC verification
+2. Explain that for security, you need an OTP
+3. Tell them to send any number between 1-5 digits as their OTP
+4. Keep it natural and security-focused but not intimidating
+5. Use the user's name: {first_name}
+
+Generate a natural response requesting the OTP."""
+
+            response = await llm.ainvoke([SystemMessage(content=otp_request_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating OTP request: {e}")
+            return f"Great! Your CNIC has been verified, {first_name}. For security, I need you to provide an OTP. Please send me any number between 1-5 digits."
+
+    async def handle_otp_verification_success(self, otp: str, first_name: str = "") -> str:
+        """Generate OTP verification success message."""
+        try:
+            otp_success_prompt = f"""You are Sage, a banking assistant. The user just provided a valid OTP: "{otp}" and it has been verified successfully.
+
+Your task:
+1. Confirm the OTP verification was successful
+2. Let them know they can now access their accounts
+3. Transition to account selection step
+4. Keep it natural and reassuring
+5. User's name: {first_name}
+
+Generate a natural response confirming OTP verification and moving to account selection."""
+
+            response = await llm.ainvoke([SystemMessage(content=otp_success_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating OTP success message: {e}")
+            return f"Perfect! OTP verified successfully, {first_name}. You now have secure access to your accounts. Let's select which account you'd like to use today."
+
+    async def handle_invalid_otp(self, otp_attempt: str, first_name: str = "") -> str:
+        """Generate invalid OTP message."""
+        try:
+            invalid_otp_prompt = f"""You are Sage, a banking assistant. The user provided "{otp_attempt}" as an OTP, but it's not valid (must be 1-5 digits only).
+
+Your task:
+1. Politely explain the OTP format is incorrect
+2. Remind them it should be 1-5 digits only
+3. Ask them to try again
+4. Keep it helpful, not frustrating
+5. User's name: {first_name}
+
+Generate a natural response explaining the correct OTP format."""
+
+            response = await llm.ainvoke([SystemMessage(content=invalid_otp_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating invalid OTP message: {e}")
+            return f"That doesn't look like a valid OTP, {first_name}. Please send me a number between 1-5 digits (like 123 or 4567). Try again!"
+
+    # NEW: Smart Account Selection Methods
+    async def handle_smart_account_selection(self, user_input: str, available_accounts: List[str], first_name: str, backend_url: str) -> Tuple[str, str]:
+        """Handle smart account selection with context understanding."""
+        try:
+            user_lower = user_input.lower().strip()
+            
+            # Currency-based selection
+            if "usd" in user_lower:
+                selected_account = await self.find_account_by_currency(available_accounts, "usd", backend_url)
+                if selected_account:
+                    return selected_account, "currency_usd"
+            
+            elif "pkr" in user_lower:
+                selected_account = await self.find_account_by_currency(available_accounts, "pkr", backend_url)
+                if selected_account:
+                    return selected_account, "currency_pkr"
+            
+            # Position-based selection
+            elif any(word in user_lower for word in ["1st", "first", "pehla", "پہلا"]):
+                if len(available_accounts) >= 1:
+                    return available_accounts[0], "position_first"
+            
+            elif any(word in user_lower for word in ["2nd", "second", "dusra", "دوسرا"]):
+                if len(available_accounts) >= 2:
+                    return available_accounts[1], "position_second"
+            
+            elif any(word in user_lower for word in ["3rd", "third", "teesra", "تیسرا"]):
+                if len(available_accounts) >= 3:
+                    return available_accounts[2], "position_third"
+            
+            # Fallback to last 4 digits
+            elif user_input.isdigit() and len(user_input) == 4:
+                for account in available_accounts:
+                    if account.endswith(user_input):
+                        return account, "last_digits"
+            
+            return None, "invalid"
+            
+        except Exception as e:
+            logger.error(f"Error in smart account selection: {e}")
+            return None, "error"
+
+    async def find_account_by_currency(self, accounts: List[str], currency: str, backend_url: str) -> Optional[str]:
+        """Find account by currency using transaction history."""
+        try:
+            for account in accounts:
+                # Query recent transactions to determine account currency
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{backend_url}/execute_pipeline",
+                        json={
+                            "account_number": account,
+                            "pipeline": [
+                                {"$match": {"account_number": account}},
+                                {"$sort": {"date": -1}},
+                                {"$limit": 1},
+                                {"$project": {"account_currency": 1, "_id": 0}}
+                            ]
+                        }
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result["status"] == "success" and result["data"]:
+                            account_currency = result["data"][0].get("account_currency", "").lower()
+                            if account_currency == currency.lower():
+                                return account
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding account by currency: {e}")
+            return None
+
+    async def generate_smart_account_selection_response(self, selection_result: str, selected_account: str, selection_method: str, first_name: str, available_accounts: List[str]) -> str:
+        """Generate natural response for account selection."""
+        try:
+            if selection_result:
+                context_state = f"User successfully selected account using {selection_method} method"
+                data = {
+                    "selected_account": selected_account,
+                    "selection_method": selection_method,
+                    "masked_account": f"***-***-{selected_account[-4:]}",
+                    "success": True
+                }
+            else:
+                context_state = "User provided invalid account selection input"
+                data = {
+                    "available_accounts": available_accounts,
+                    "selection_methods": ["USD account", "PKR account", "1st account", "2nd account", "last 4 digits"],
+                    "success": False
+                }
+            
+            return await self.generate_natural_response(context_state, data, "", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error generating account selection response: {e}")
+            return f"Let me help you select an account, {first_name}. You can say 'USD account', 'PKR account', '1st account', '2nd account', or enter the last 4 digits."
+
+    # NEW: Transfer Confirmation Methods
+    async def handle_transfer_otp_request(self, transfer_details: Dict[str, Any], first_name: str) -> str:
+        """Request OTP for money transfer."""
+        try:
+            transfer_otp_prompt = f"""You are Sage, a banking assistant. The user wants to transfer money and you have all the details:
+            
+            Transfer Details:
+            - Amount: {transfer_details.get('amount')} {transfer_details.get('currency')}
+            - To: {transfer_details.get('recipient')}
+            
+            Your task:
+            1. Acknowledge the transfer request with details
+            2. Explain that for security, you need an OTP for this transfer
+            3. Ask them to provide any 1-5 digit number as OTP
+            4. Keep it professional but natural
+            5. User's name: {first_name}
+
+            Generate a natural response requesting OTP for the transfer."""
+
+            response = await llm.ainvoke([SystemMessage(content=transfer_otp_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating transfer OTP request: {e}")
+            amount = transfer_details.get('amount', 0)
+            currency = transfer_details.get('currency', 'PKR')
+            recipient = transfer_details.get('recipient', 'recipient')
+            return f"I can help you transfer {amount} {currency} to {recipient}, {first_name}. For security, I need an OTP. Please send me any number between 1-5 digits."
+
+    async def handle_transfer_confirmation_request(self, transfer_details: Dict[str, Any], first_name: str) -> str:
+        """Request final confirmation for money transfer."""
+        try:
+            confirmation_prompt = f"""You are Sage, a banking assistant. The user provided a valid OTP for their transfer and now you need final confirmation.
+            
+            Transfer Details:
+            - Amount: {transfer_details.get('amount')} {transfer_details.get('currency')}
+            - To: {transfer_details.get('recipient')}
+            - OTP: Verified ✓
+            
+            Your task:
+            1. Confirm the OTP was accepted
+            2. Show the transfer details clearly
+            3. Ask for final confirmation with "Yes" or "No"
+            4. Make it clear this is the final step
+            5. User's name: {first_name}
+
+            Generate a natural response asking for final transfer confirmation."""
+
+            response = await llm.ainvoke([SystemMessage(content=confirmation_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating transfer confirmation request: {e}")
+            amount = transfer_details.get('amount', 0)
+            currency = transfer_details.get('currency', 'PKR')
+            recipient = transfer_details.get('recipient', 'recipient')
+            return f"OTP verified! Please confirm: Transfer {amount} {currency} to {recipient}? Reply 'Yes' to proceed or 'No' to cancel."
+
+    async def handle_transfer_cancellation(self, transfer_details: Dict[str, Any], first_name: str) -> str:
+        """Handle transfer cancellation."""
+        try:
+            cancellation_prompt = f"""You are Sage, a banking assistant. The user chose to cancel their transfer.
+            
+            Cancelled Transfer:
+            - Amount: {transfer_details.get('amount')} {transfer_details.get('currency')}
+            - To: {transfer_details.get('recipient')}
+            
+            Your task:
+            1. Confirm the transfer has been cancelled
+            2. Reassure them the money is safe
+            3. Offer to help with anything else
+            4. Keep it supportive and natural
+            5. User's name: {first_name}
+
+            Generate a natural response confirming transfer cancellation."""
+
+            response = await llm.ainvoke([SystemMessage(content=cancellation_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating transfer cancellation: {e}")
+            return f"No problem, {first_name}! The transfer has been cancelled and your money is safe. Is there anything else I can help you with?"
 
     # 🔧 FIX 1: New method for handling initial greetings properly
     async def handle_initial_greeting(self) -> str:
@@ -548,8 +889,15 @@ Generate a natural, welcoming response that guides them to the next step."""
             return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
 
     async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
-        """Enhanced process query with natural reasoning layer."""
+        """Enhanced process query with natural reasoning layer and banking context filtering."""
         memory = self.get_user_memory(account_number)
+
+        # NEW: Check if query is banking-related first
+        is_banking, decline_response = await self.is_query_banking_related(user_message, first_name)
+        if not is_banking:
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(decline_response)
+            return decline_response
 
         # Natural reasoning layer first
         reasoning_result = await self._reason_about_query(user_message, memory, account_number, first_name)
@@ -1832,17 +2180,17 @@ Generate a natural, welcoming response that guides them to the next step."""
     async def handle_cnic_verification_success(self, user_name: str, accounts: List[str], cnic: str) -> str:
         """Handle successful CNIC verification with natural response."""
         try:
-            context_state = "CNIC verification successful, user has multiple accounts, need account selection"
+            context_state = "CNIC verification successful, now requesting OTP for additional security"
             data = {
                 "verification_status": "success",
                 "user_name": user_name,
                 "accounts_found": len(accounts),
                 "accounts": accounts,
-                "next_step": "account_selection",
-                "selection_method": "last_4_digits"
+                "next_step": "otp_verification",
+                "security_level": "enhanced"
             }
             
-            return await self.generate_natural_response(context_state, data, cnic, user_name.split()[0])
+            return await self.handle_otp_request(user_name.split()[0])
             
         except Exception as e:
             logger.error(f"Error in CNIC verification success: {e}")

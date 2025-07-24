@@ -2,9 +2,25 @@ from fastapi import FastAPI
 from api_routes import router
 
 app = FastAPI(
-    title="Banking AI Assistant - CNIC Authentication",
-    description="CNIC-based banking assistant with account selection and LangChain memory",
-    version="2.0.0"
+    title="Enhanced Banking AI Assistant - Full Authentication & Context System",
+    description="""
+    Advanced CNIC-based banking assistant with comprehensive authentication and intelligent context management.
+    
+    Features:
+    • CNIC Verification + OTP Authentication
+    • Smart Account Selection (USD/PKR, 1st/2nd, Last 4 digits)
+    • Enhanced Transfer Flow (OTP + Confirmation)
+    • Banking Context Filtering (Politely declines non-banking queries)
+    • Intelligent Context Memory System
+    • Session Restart Functionality (Page refresh simulation)
+    • Natural Language Processing with LangChain
+    • Varied Response Generation (No repetitive patterns)
+    
+    Authentication Flow: CNIC → OTP → Smart Account Selection → Full Banking Access
+    Transfer Flow: Details → OTP → Confirmation → Execution
+    Context Management: Multi-layer memory with intelligent reference resolution
+    """,
+    version="3.0.0"
 )
 
 app.include_router(router)
