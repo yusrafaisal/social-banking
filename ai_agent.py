@@ -197,37 +197,43 @@ class BankingAIAgent:
             
             # If no obvious non-banking indicators, use LLM as backup for edge cases
             if len(user_message.split()) > 3:  # Only use LLM for longer queries
+                # REPLACE the entire non_banking_filter_prompt with:
                 non_banking_filter_prompt = f"""
-                You are a banking assistant filter. Determine if the following query is CLEARLY about non-banking topics.
+                You are a banking assistant filter. This assistant ONLY handles queries about the user's OWN account data.
 
-                ONLY respond "YES" if the query is OBVIOUSLY about:
-                - World events, politics, news, current affairs
-                - Weather, climate, forecasts  
-                - Entertainment (movies, music, celebrities, sports)
-                - General knowledge (science, history, geography)
-                - Technology unrelated to banking
-                - Health, cooking, travel, jokes, personal advice
+                ONLY respond "NO" (allow) if the query is SPECIFICALLY about:
+                - User's account balance ("my balance", "how much money do I have")
+                - User's transaction history ("my transactions", "show my purchases")
+                - User's spending analysis ("how much did I spend", "my spending on X")
+                - User's money transfers ("transfer money to X", "send money")
+                - User's account selection or authentication
 
-                If there's ANY chance it could be banking-related or if it's ambiguous, respond "NO".
-                
-                Examples of CLEAR non-banking (respond "YES"):
-                - "Who is the president of USA?"
-                - "What's the weather today?"
-                - "Tell me a joke"
-                - "Who won the football game?"
-                
-                Examples to ALLOW (respond "NO"):  
-                - "check 3 instead" (could be contextual banking)
-                - "what about last month" (could be banking context)
-                - "show me more" (could be banking follow-up)
-                - "how much" (could be banking amount)
-                - Numbers, dates, amounts (could be banking)
+                RESPOND "YES" (block) for ALL other queries including:
+                - General banking questions ("best bank in Pakistan", "which bank is good")
+                - Banking industry information ("compare banks", "bank services")
+                - Other people's accounts or general banking advice
+                - Investment, loan, or product recommendations
+                - Banking policies, rules, or general information
+                - Anything not specifically about THIS USER'S account data
+
+                Examples to BLOCK (respond "YES"):
+                - "best bank in pakistan"
+                - "which bank should I choose"
+                - "what are interest rates"
+                - "how to open a bank account"
+                - "bank timings"
+                - "banking services"
+
+                Examples to ALLOW (respond "NO"):
+                - "my balance"
+                - "my transactions in May"
+                - "transfer 500 to John"
+                - "how much did I spend on Netflix"
 
                 Query: "{user_message}"
 
-                Respond with only "YES" (clearly non-banking) or "NO" (allow processing).
+                Respond with only "YES" (block) or "NO" (allow).
                 """
-
                 response = llm.invoke([SystemMessage(content=non_banking_filter_prompt)])
                 result = response.content.strip().upper()
                 
@@ -526,7 +532,7 @@ Generate a natural, security-focused response asking for OTP."""
                 memory.chat_memory.add_ai_message(response)
                 return response
             
-            
+
         # PRIMARY PATH: LLM-FIRST APPROACH (for banking/ambiguous queries)
         try:
             logger.info("Attempting LLM-first approach for banking/contextual query")
