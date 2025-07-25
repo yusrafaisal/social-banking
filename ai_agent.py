@@ -322,7 +322,7 @@ Generate a natural, welcoming response that guides them to the next step."""
 
 Your task:
 1. Explain that for additional security, they need to provide an OTP
-2. Tell them the OTP can be any number between 1-5 digits
+2. Tell them the OTP is a number between 1-5 digits sent to your mobile phone
 3. Ask them to enter their OTP
 4. Keep it simple and secure-sounding
 
@@ -332,7 +332,7 @@ Generate a natural, security-focused response asking for OTP."""
             return response.content.strip()
         except Exception as e:
             logger.error(f"Error generating OTP request: {e}")
-            return f"Great! For additional security, {first_name}, please provide an OTP. You can enter any number between 1-5 digits as your OTP."
+            return f"Great! For additional security, {first_name}, please provide an OTP. You should have received an OTP (1-5 digits) on your mobile phone."
 
     async def handle_otp_success(self, user_name: str, accounts: List[str]) -> str:
         """Handle successful OTP verification."""
@@ -507,7 +507,26 @@ Generate a natural, security-focused response asking for OTP."""
             memory.chat_memory.add_user_message(user_message)
             memory.chat_memory.add_ai_message(response)
             return response
+        # Check if query is CLEARLY non-banking (less restrictive)
+        if self.is_clearly_non_banking_query(user_message):
+            logger.info(f"Clearly non-banking query detected: {user_message}")
+            response = await self.handle_non_banking_query(user_message, first_name)
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(response)
+            return response
 
+        # NEW: Handle contextual queries about previous results
+        contextual_keywords = ["these", "which one", "most expensive", "highest", "largest", "biggest", "cheapest", "smallest"]
+        if any(keyword in user_message.lower() for keyword in contextual_keywords):
+            conversation_history = self._get_context_summary(memory.chat_memory.messages)
+            if "transactions" in conversation_history.lower():
+                context_state = "User asking about specific transaction from previously shown results"
+                response = await self.generate_natural_response(context_state, {"contextual_query": True, "previous_context": conversation_history}, user_message, first_name, conversation_history)
+                memory.chat_memory.add_user_message(user_message)
+                memory.chat_memory.add_ai_message(response)
+                return response
+            
+            
         # PRIMARY PATH: LLM-FIRST APPROACH (for banking/ambiguous queries)
         try:
             logger.info("Attempting LLM-first approach for banking/contextual query")
@@ -864,6 +883,15 @@ Generate a natural, security-focused response asking for OTP."""
 
     def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
         """Detect intent using LLM for more flexible understanding."""
+        
+        # Handle contextual queries about previous results
+        user_message_lower = user_message.lower()
+        contextual_keywords = ["these", "which one", "most expensive", "highest", "largest", "biggest", "cheapest", "smallest"]
+        
+        if any(keyword in user_message_lower for keyword in contextual_keywords):
+            if any(word in user_message_lower for word in ["expensive", "highest", "largest", "biggest"]):
+                return "transaction_history"  # Will be handled as a specific query
+        
         try:
             response = llm.invoke([
                 SystemMessage(content=intent_prompt.format(
