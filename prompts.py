@@ -116,10 +116,16 @@ pipeline_generation_prompt = PromptTemplate(
     - description: merchant/service name
     - category: transaction category
     - account_currency: "pkr" or "usd"
-    - amount_deducted_from_account: number
-    - transaction_amount: number
+    - amount_deducted_from_account: number (THIS IS THE ACTUAL AMOUNT TAKEN FROM ACCOUNT - USE THIS FOR SPENDING ANALYSIS)
+    - transaction_amount: number (original transaction amount in its currency)
     - transaction_currency: "pkr" or "usd"
     - account_balance: current balance
+
+    CRITICAL FIELD USAGE RULES:
+    - For ALL spending analysis, use "amount_deducted_from_account" NOT "transaction_amount"
+    - For transaction history display, show both amounts but emphasize "amount_deducted_from_account"
+    - "amount_deducted_from_account" represents the actual impact on the user's account
+    - "transaction_amount" is just the original transaction value which may be in different currency
 
     SPECIAL HANDLING FOR COMPARATIVE QUERIES:
     - For "spending more/less than" queries, create separate groups for each time period
@@ -160,7 +166,7 @@ pipeline_generation_prompt = PromptTemplate(
     General Rules:
     - Always include account_number in $match
     - For description and category matching, use $regex with case-insensitive option
-    - For spending analysis or category_spending, group by null and sum transaction_amount
+    - For spending analysis or category_spending, group by null and sum amount_deducted_from_account (NOT transaction_amount)
     - For transaction history, sort by date descending and _id descending
     - Handle currency filtering when specified
     - NEVER use ISODate() syntax - always use {{"$date": "ISO-string"}} format
@@ -173,11 +179,11 @@ pipeline_generation_prompt = PromptTemplate(
         {{"$facet": {{
             "may_spending": [
                 {{"$match": {{"date": {{"$gte": {{"$date": "2025-05-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-05-31T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$transaction_amount"}}, "currency": {{"$first": "$transaction_currency"}}}}}}
+                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
             ],
             "april_spending": [
                 {{"$match": {{"date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$transaction_amount"}}, "currency": {{"$first": "$transaction_currency"}}}}}}
+                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
             ]
         }}}}
     ]
@@ -188,11 +194,11 @@ pipeline_generation_prompt = PromptTemplate(
         {{"$facet": {{
             "current_spending": [
                 {{"$match": {{"date": {{"$gte": {{"$date": "2025-07-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-07-31T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$transaction_amount"}}, "currency": {{"$first": "$transaction_currency"}}}}}}
+                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
             ],
             "april_spending": [
                 {{"$match": {{"date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$transaction_amount"}}, "currency": {{"$first": "$transaction_currency"}}}}}}
+                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
             ]
         }}}}
     ]
@@ -200,7 +206,7 @@ pipeline_generation_prompt = PromptTemplate(
     Intent: spending_analysis, Filters: {{"description": "netflix", "month": "april", "year": 2025, "transaction_type": "debit"}}
     Pipeline: [
         {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
-        {{"$group": {{"_id": null, "total_amount": {{"$sum": "$transaction_amount"}}, "currency": {{"$first": "$transaction_currency"}}}}}}
+        {{"$group": {{"_id": null, "total_amount": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
     ]
 
     Intent: transaction_history, Filters: {{"limit": 10}}
@@ -213,7 +219,7 @@ pipeline_generation_prompt = PromptTemplate(
     Intent: category_spending, Filters: {{"category": "Food", "month": "april", "year": 2025, "transaction_type": "debit"}}
     Pipeline: [
         {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": {{"$regex": "Food", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
-        {{"$group": {{"_id": null, "total_amount": {{"$sum": "$transaction_amount"}}, "currency": {{"$first": "$transaction_currency"}}}}}}
+        {{"$group": {{"_id": null, "total_amount": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
     ]
 
     Return only the JSON array pipeline.

@@ -148,112 +148,152 @@ class BankingAIAgent:
             )
         return self.user_memories[account_number]
 
-    def is_clearly_non_banking_query(self, user_message: str) -> bool:
-        """Check if user query is clearly non-banking using keyword detection and LLM as backup."""
+    def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
+        """Check if user query is clearly non-banking using context-aware LLM filtering."""
         try:
             user_message_lower = user_message.lower().strip()
             
-            # Quick keyword-based filtering for obvious non-banking topics
-            obvious_non_banking_keywords = [
-                "president", "weather", "temperature", "rain", "sunny", "cloudy",
-                "sports", "football", "cricket", "basketball", "soccer",
-                "movies", "film", "actor", "actress", "celebrity",
-                "news", "politics", "government", "election", "vote",
-                "cooking", "recipe", "food recipe", "how to cook",
-                "travel destination", "vacation spot", "tourism",
-                "joke", "tell me a joke", "funny story",
-                "science", "physics", "chemistry", "biology",
-                "technology news", "latest tech", "gadgets",
-                "health tips", "medical advice", "symptoms",
-                "astrology", "horoscope", "zodiac",
-                "music", "song", "singer", "band",
-                "book", "novel", "author", "literature"
-            ]
-            
-            # Check for obvious non-banking keywords
-            for keyword in obvious_non_banking_keywords:
-                if keyword in user_message_lower:
-                    logger.info(f"Blocked obvious non-banking query: '{user_message}' (keyword: {keyword})")
-                    return True
-            
-            # Common non-banking question patterns
-            non_banking_patterns = [
+            # Only keep the most obvious non-banking patterns (very minimal)
+            extremely_obvious_patterns = [
                 r'^who is (the )?president',
                 r'^what.*(weather|temperature)',
                 r'^tell me a joke',
-                r'^how to cook',
-                r'^what happened in the news',
-                r'^latest news',
-                r'^(who|what|when|where|how).*(movie|film|actor)',
-                r'^(who|what).*(singer|song|music)',
-                r'^what time is it',
-                r'^how old is'
+                r'^what time is it'
             ]
             
-            for pattern in non_banking_patterns:
+            # Check only for extremely obvious non-banking patterns
+            for pattern in extremely_obvious_patterns:
                 if re.match(pattern, user_message_lower):
-                    logger.info(f"Blocked non-banking query by pattern: '{user_message}' (pattern: {pattern})")
+                    logger.info(f"Blocked extremely obvious non-banking query: '{user_message}' (pattern: {pattern})")
                     return True
             
-            # If no obvious non-banking indicators, use LLM as backup for edge cases
-            if len(user_message.split()) > 3:  # Only use LLM for longer queries
-                # REPLACE the entire non_banking_filter_prompt with:
-                non_banking_filter_prompt = f"""
-                You are a banking assistant filter. This assistant ONLY handles queries about the user's OWN account data.
+            # Use context-aware LLM for all other queries
+            context_aware_filter_prompt = f"""
+    You are a banking assistant filter that processes queries WITH CONTEXT. This assistant ONLY handles queries about the user's OWN account data.
 
-                ONLY respond "NO" (allow) if the query is SPECIFICALLY about:
-                - User's account balance ("my balance", "how much money do I have")
-                - User's transaction history ("my transactions", "show my purchases")
-                - User's spending analysis ("how much did I spend", "my spending on X")
-                - User's money transfers ("transfer money to X", "send money")
-                - User's account selection or authentication
+    CONVERSATION HISTORY:
+    {conversation_history}
 
-                RESPOND "YES" (block) for ALL other queries including:
-                - General banking questions ("best bank in Pakistan", "which bank is good")
-                - Banking industry information ("compare banks", "bank services")
-                - Other people's accounts or general banking advice
-                - Investment, loan, or product recommendations
-                - Banking policies, rules, or general information
-                - Anything not specifically about THIS USER'S account data
+    CURRENT QUERY: "{user_message}"
 
-                Examples to BLOCK (respond "YES"):
-                - "best bank in pakistan"
-                - "which bank should I choose"
-                - "what are interest rates"
-                - "how to open a bank account"
-                - "bank timings"
-                - "banking services"
+    CONTEXT-AWARE ANALYSIS:
+    - If the conversation history shows banking context (transactions, balance, spending), then contextual queries should be ALLOWED
+    - If user just saw transaction data and asks "which one is most expensive" or "total kitna hai" or "mujhey inka total kite batao" - this is BANKING
+    - If user asks follow-up questions about previously shown data - this is BANKING  
+    - If user asks in Roman Urdu or mixed languages but refers to banking data - this is BANKING
+    - If no banking context exists, then general questions should be blocked
 
-                Examples to ALLOW (respond "NO"):
-                - "my balance"
-                - "my transactions in May"
-                - "transfer 500 to John"
-                - "how much did I spend on Netflix"
+    ONLY respond "NO" (allow) if the query is:
+    1. SPECIFICALLY about user's account data ("my balance", "my transactions")
+    2. A CONTEXTUAL follow-up to banking data already shown ("which one", "total", "most expensive", "inka total", "kitna", "kya hai")
+    3. Money transfers ("transfer money to X", "send money")
+    4. Account authentication queries
+    5. Roman Urdu banking queries ("mera balance kitna hai", "total kitna tha")
 
-                Query: "{user_message}"
+    RESPOND "YES" (block) for:
+    - General banking questions ("best bank in Pakistan") 
+    - Investment advice or banking policies
+    - Other people's accounts
+    - Truly non-banking topics (when no banking context exists)
+    - Weather, politics, entertainment (only when NO banking context)
 
-                Respond with only "YES" (block) or "NO" (allow).
-                """
-                response = llm.invoke([SystemMessage(content=non_banking_filter_prompt)])
-                result = response.content.strip().upper()
-                
-                if result == "YES":
-                    logger.info(f"LLM blocked non-banking query: '{user_message}'")
-                    return True
-                else:
-                    logger.info(f"LLM allowed query (banking or ambiguous): '{user_message}'")
-                    return False
+    CONTEXTUAL EXAMPLES:
+    History: "Here are your last 4 transactions..." 
+    Query: "which one is most expensive" → "NO" (allow - contextual banking)
+
+    History: "You spent $77.23 on groceries"
+    Query: "mujhey inka total kite batao" → "NO" (allow - contextual banking)
+
+    History: "Your June transactions: Foodpanda $14.01, Grocery $53.44..."
+    Query: "inka total kitna hai in usd" → "NO" (allow - contextual banking)
+
+    History: (empty/no banking context)
+    Query: "what's the weather" → "YES" (block - non-banking)
+
+    History: (empty/no banking context) 
+    Query: "best bank in pakistan" → "YES" (block - general banking)
+
+    Respond with only "YES" (block) or "NO" (allow).
+    """
             
-            # Default: allow processing (err on the side of allowing)
-            logger.info(f"Allowing query by default: '{user_message}'")
-            return False
+            response = llm.invoke([SystemMessage(content=context_aware_filter_prompt)])
+            result = response.content.strip().upper()
+            
+            if result == "YES":
+                logger.info(f"Context-aware LLM blocked non-banking query: '{user_message}'")
+                return True
+            else:
+                logger.info(f"Context-aware LLM allowed query: '{user_message}'")
+                return False
             
         except Exception as e:
-            logger.error(f"Error in non-banking filter: {e}")
+            logger.error(f"Error in context-aware non-banking filter: {e}")
             # If filter fails, err on the side of allowing the query
             logger.info(f"Filter error - allowing query: '{user_message}'")
             return False
 
+    def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
+        """Convert contextual queries into standalone queries using conversation history."""
+        try:
+            if not conversation_history or len(conversation_history.strip()) < 10:
+                return user_message  # No context to work with
+            
+            contextual_resolution_prompt = f"""
+    You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
+
+    CONVERSATION HISTORY:
+    {conversation_history}
+
+    CURRENT CONTEXTUAL QUERY: "{user_message}"
+
+    Your task: If the current query is contextual (refers to previous data), create a standalone query that includes all necessary context.
+
+    EXAMPLES:
+
+    History: "Here are your last 4 transactions: 1. Hamza transfer $35, 2. Grocery Store $77.23, 3. Car Loan $350.69, 4. Withdrawal $117.19"
+    Query: "which one is most expensive" 
+    → "show me the most expensive transaction from my recent transaction history"
+
+    History: "You spent $77.23 at Grocery Store on June 29"
+    Query: "mujhey inka total kite batao in usd"
+    → "what is my total spending amount in USD"
+
+    History: "Your June spending: Food $100, Travel $200, Shopping $150"
+    Query: "food ka kitna tha"
+    → "how much did I spend on food in June"
+
+    History: "Your balance is $4023.90"
+    Query: "kya main 5000 afford kar sakta hun"
+    → "can I afford $5000 based on my current balance"
+
+    History: "Your last 4 transactions: Foodpanda $14.01, Grocery Store $53.44, Car Loan $350.69, Withdrawal $117.19"
+    Query: "mujhey inka total kite batao in usd"
+    → "what is the total amount of my recent transactions in USD"
+
+    RULES:
+    1. If the query is already standalone (contains complete context), return it unchanged
+    2. If the query references previous data ("which one", "inka total", "that transaction"), resolve it with context
+    3. Preserve the user's intent while making it standalone
+    4. Convert to English if needed for processing
+    5. Include relevant timeframes, amounts, or categories from history
+
+    RESOLVED STANDALONE QUERY:
+    """
+            
+            response = llm.invoke([SystemMessage(content=contextual_resolution_prompt)])
+            resolved_query = response.content.strip()
+            
+            # Remove any quotes or extra formatting
+            if resolved_query.startswith('"') and resolved_query.endswith('"'):
+                resolved_query = resolved_query[1:-1]
+            
+            logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
+            return resolved_query
+            
+        except Exception as e:
+            logger.error(f"Error in contextual query resolution: {e}")
+            return user_message  # Return original query if resolution fails
+        
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
         """Generate natural LLM responses with varied greetings and natural conversation flow."""
         
@@ -481,13 +521,57 @@ Generate a natural, security-focused response asking for OTP."""
             logger.error(f"Error in non-banking response: {e}")
             return f"I'm sorry {first_name}, but I can only help with banking and financial questions. I don't have information about topics outside of banking in my database. Is there anything related to your banking needs I can help you with instead?"
 
+
+    def _get_enhanced_context_summary(self, chat_history: List) -> str:
+        """Get an enhanced summary of recent conversation for context."""
+        if not chat_history:
+            return "No previous conversation."
+        
+        # Get last 6 messages for better context (3 exchanges)
+        recent_messages = chat_history[-6:] if len(chat_history) > 6 else chat_history
+        context_lines = []
+        
+        for i, msg in enumerate(recent_messages):
+            speaker = "Human" if i % 2 == 0 else "Assistant"
+            content = msg.content
+            
+            # Keep more content for better context but limit extremely long responses
+            if len(content) > 300:
+                content = content[:300] + "..."
+            
+            context_lines.append(f"{speaker}: {content}")
+        
+        full_context = "\n".join(context_lines)
+        
+        # If context is very long, summarize it
+        if len(full_context) > 1000:
+            try:
+                summary_prompt = f"""
+    Summarize this banking conversation context in 2-3 sentences, preserving key banking data:
+
+    {full_context}
+
+    Focus on: transaction amounts, spending categories, timeframes, and any specific data shown to the user.
+    """
+                response = llm.invoke([SystemMessage(content=summary_prompt)])
+                return response.content.strip()
+            except:
+                return full_context[:1000] + "..."
+        
+        return full_context
+
+    # Update the old method to use the enhanced version
+    def _get_context_summary(self, chat_history: List) -> str:
+        """Get a summary of recent conversation for context."""
+        return self._get_enhanced_context_summary(chat_history)
+
     async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
-        """Enhanced process query with LLM-first approach, OTP support, and less restrictive filtering."""
+        """Enhanced process query with contextual awareness and query resolution."""
         memory = self.get_user_memory(account_number)
 
         logger.info({
             "action": "process_query_start",
-            "approach": "llm_first_with_fallback_otp_less_restrictive",
+            "approach": "context_aware_llm_first",
             "user_message": user_message,
             "account_number": account_number
         })
@@ -497,79 +581,71 @@ Generate a natural, security-focused response asking for OTP."""
             response = await self.handle_session_end(account_number, first_name)
             return response
 
+        # Get conversation history for context
+        conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+        
         # Handle greetings and simple queries
         if self._is_simple_greeting_or_general(user_message):
             context_state = "User sent a greeting or general question, no specific banking data needed"
-            conversation_history = self._get_context_summary(memory.chat_memory.messages)
             response = await self.generate_natural_response(context_state, None, user_message, first_name, conversation_history)
             memory.chat_memory.add_user_message(user_message)
             memory.chat_memory.add_ai_message(response)
             return response
 
-        # NEW: Check if query is CLEARLY non-banking (less restrictive)
-        if self.is_clearly_non_banking_query(user_message):
-            logger.info(f"Clearly non-banking query detected: {user_message}")
-            response = await self.handle_non_banking_query(user_message, first_name)
-            memory.chat_memory.add_user_message(user_message)
-            memory.chat_memory.add_ai_message(response)
-            return response
-        # Check if query is CLEARLY non-banking (less restrictive)
-        if self.is_clearly_non_banking_query(user_message):
-            logger.info(f"Clearly non-banking query detected: {user_message}")
+        # ENHANCED: Context-aware non-banking filter
+        if self.is_clearly_non_banking_query(user_message, conversation_history):
+            logger.info(f"Context-aware filter blocked non-banking query: {user_message}")
             response = await self.handle_non_banking_query(user_message, first_name)
             memory.chat_memory.add_user_message(user_message)
             memory.chat_memory.add_ai_message(response)
             return response
 
-        # NEW: Handle contextual queries about previous results
-        contextual_keywords = ["these", "which one", "most expensive", "highest", "largest", "biggest", "cheapest", "smallest"]
-        if any(keyword in user_message.lower() for keyword in contextual_keywords):
-            conversation_history = self._get_context_summary(memory.chat_memory.messages)
-            if "transactions" in conversation_history.lower():
-                context_state = "User asking about specific transaction from previously shown results"
-                response = await self.generate_natural_response(context_state, {"contextual_query": True, "previous_context": conversation_history}, user_message, first_name, conversation_history)
-                memory.chat_memory.add_user_message(user_message)
-                memory.chat_memory.add_ai_message(response)
-                return response
-            
+        # NEW: Resolve contextual queries into standalone queries
+        original_message = user_message
+        resolved_query = self.resolve_contextual_query(user_message, conversation_history)
+        
+        if resolved_query != original_message:
+            logger.info(f"Using resolved query for processing: '{resolved_query}'")
+            processing_message = resolved_query
+        else:
+            processing_message = user_message
 
-        # PRIMARY PATH: LLM-FIRST APPROACH (for banking/ambiguous queries)
+        # PRIMARY PATH: LLM-FIRST APPROACH with resolved query
         try:
-            logger.info("Attempting LLM-first approach for banking/contextual query")
+            logger.info("Attempting context-aware LLM-first approach")
             
-            # Step 1: Extract filters using LLM
-            filters = self.extract_filters_with_llm(user_message)
-            logger.info(f"LLM extracted filters: {filters.dict()}")
+            # Step 1: Extract filters using resolved query
+            filters = self.extract_filters_with_llm(processing_message)
+            logger.info(f"LLM extracted filters from resolved query: {filters.dict()}")
             
-            # Step 2: Detect intent using LLM
-            intent = self.detect_intent_from_filters(user_message, filters)
+            # Step 2: Detect intent using resolved query
+            intent = self.detect_intent_from_filters(processing_message, filters)
             logger.info(f"LLM detected intent: {intent}")
             
-            # Step 3: Handle based on intent
+            # Step 3: Handle based on intent (same as before)
             if intent == "balance_inquiry":
-                response = await self._handle_balance_inquiry(account_number, first_name, user_message, memory)
-                memory.chat_memory.add_user_message(user_message)
+                response = await self._handle_balance_inquiry(account_number, first_name, original_message, memory)
+                memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
             
             elif intent == "transfer_money":
-                # Enhanced transfer with OTP support
-                response = await self._handle_money_transfer_with_otp(account_number, user_message, first_name, memory)
-                memory.chat_memory.add_user_message(user_message)
+                response = await self._handle_money_transfer_with_otp(account_number, original_message, first_name, memory)
+                memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
             
             elif intent in ["transaction_history", "spending_analysis", "category_spending"]:
-                # Step 4: Generate pipeline using LLM
+                # Step 4: Generate pipeline using resolved query
                 pipeline = self.generate_pipeline_from_filters(filters, intent, account_number)
-                logger.info(f"LLM generated pipeline: {pipeline}")
+                logger.info(f"LLM generated pipeline from resolved query: {pipeline}")
                 
-                # Step 5: Validate and execute pipeline
+                # Step 5: Execute with original message for natural response
                 if pipeline:
                     try:
                         jsonschema.validate(pipeline, PIPELINE_SCHEMA)
-                        response = await self._execute_llm_pipeline(account_number, pipeline, user_message, first_name, memory, intent)
-                        memory.chat_memory.add_user_message(user_message)
+                        response = await self._execute_llm_pipeline(account_number, pipeline, original_message, first_name, memory, intent)
+                        memory.chat_memory.add_user_message(original_message)
                         memory.chat_memory.add_ai_message(response)
                         return response
                     except jsonschema.ValidationError as e:
@@ -579,52 +655,41 @@ Generate a natural, security-focused response asking for OTP."""
                     raise Exception("Empty pipeline generated")
             
             else:
-                # General or unclear intent - handle naturally (allow contextual queries)
-                context_state = "General banking assistance or contextual query"
-                conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                response = await self.generate_natural_response(context_state, None, user_message, first_name, conversation_history)
-                memory.chat_memory.add_user_message(user_message)
+                # General or contextual query
+                context_state = "General banking assistance or contextual query with history"
+                response = await self.generate_natural_response(context_state, {"resolved_query": resolved_query}, original_message, first_name, conversation_history)
+                memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
                 
         except Exception as llm_error:
-            logger.warning(f"LLM approach failed: {llm_error}. Falling back to hardcoded methods.")
+            logger.warning(f"Context-aware LLM approach failed: {llm_error}. Falling back.")
             
-            # FALLBACK PATH: HARDCODED METHODS
+            # FALLBACK PATH with resolved query
             try:
-                logger.info("Using hardcoded fallback approach")
+                logger.info("Using contextual fallback approach")
+                reasoning_result = await self._reason_about_query(processing_message, memory, account_number, first_name)
                 
-                # Use the original natural reasoning as fallback
-                reasoning_result = await self._reason_about_query(user_message, memory, account_number, first_name)
-                
-                logger.info(f"Fallback - Query: '{user_message}' -> Action: {reasoning_result.get('action_needed')} -> Analysis: {reasoning_result.get('analysis_type', 'N/A')}")
-                
-                # Handle with original hardcoded methods
+                # Handle with fallback methods using original message for response
                 if reasoning_result.get("action_needed") == "balance_check":
-                    response = await self._handle_balance_inquiry(account_number, first_name, user_message, memory)
-                    
+                    response = await self._handle_balance_inquiry(account_number, first_name, original_message, memory)
                 elif reasoning_result.get("action_needed") == "transaction_history":
-                    response = await self._handle_transaction_history(user_message, account_number, first_name, reasoning_result, memory)
-                    
+                    response = await self._handle_transaction_history(original_message, account_number, first_name, reasoning_result, memory)
                 elif reasoning_result.get("action_needed") == "sophisticated_analysis":
-                    response = await self._handle_sophisticated_analysis(user_message, account_number, first_name, reasoning_result, memory)
-                    
+                    response = await self._handle_sophisticated_analysis(original_message, account_number, first_name, reasoning_result, memory)
                 else:
-                    # Default to natural response
-                    context_state = "Fallback - providing general assistance"
-                    conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                    response = await self.generate_natural_response(context_state, None, user_message, first_name, conversation_history)
+                    context_state = "Fallback - providing contextual assistance"
+                    response = await self.generate_natural_response(context_state, {"resolved_query": resolved_query}, original_message, first_name, conversation_history)
                 
-                memory.chat_memory.add_user_message(user_message)
+                memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
                 
             except Exception as fallback_error:
-                logger.error(f"Both LLM and fallback failed: {fallback_error}")
-                context_state = "Both primary and fallback systems failed, providing error response"
-                conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                response = await self.generate_natural_response(context_state, {"error": str(fallback_error)}, user_message, first_name, conversation_history)
-                memory.chat_memory.add_user_message(user_message)
+                logger.error(f"Both context-aware LLM and fallback failed: {fallback_error}")
+                context_state = "Error in contextual processing"
+                response = await self.generate_natural_response(context_state, {"error": str(fallback_error), "resolved_query": resolved_query}, original_message, first_name, conversation_history)
+                memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
 
@@ -972,6 +1037,7 @@ Generate a natural, security-focused response asking for OTP."""
                 return "spending_analysis"
         else:
             return "general"
+        
 
     def _generate_fallback_pipeline(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
         """Generate a basic pipeline when LLM fails."""
@@ -1004,14 +1070,15 @@ Generate a natural, security-focused response asking for OTP."""
                 {
                     "$group": {
                         "_id": None,
-                        "total_amount": {"$sum": "$transaction_amount"},
-                        "currency": {"$first": "$transaction_currency"}
+                        "total_amount": {"$sum": "$amount_deducted_from_account"},  # FIXED: Use correct field
+                        "currency": {"$first": "$account_currency"}
                     }
                 }
             ]
             return pipeline
         
         return [match_stage, {"$sort": {"date": -1, "_id": -1}}, {"$limit": 10}]
+
 
     def extract_json_from_response(self, raw: str) -> Optional[Any]:
         """Extract the first JSON value from an LLM reply."""
@@ -1034,23 +1101,6 @@ Generate a natural, security-focused response asking for OTP."""
             logger.error({"action": "extract_json_parse_fail", "error": str(e), "candidate": candidate[:200]})
             return None
 
-    def _get_context_summary(self, chat_history: List) -> str:
-        """Get a summary of recent conversation for context."""
-        if not chat_history:
-            return "No previous conversation."
-        
-        # Get last 4 messages for context
-        recent_messages = chat_history[-4:] if len(chat_history) > 4 else chat_history
-        context_lines = []
-        
-        for i, msg in enumerate(recent_messages):
-            speaker = "Human" if i % 2 == 0 else "Assistant"
-            content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
-            context_lines.append(f"{speaker}: {content}")
-        
-        return "\n".join(context_lines)
-
-    # Keep ALL the existing fallback methods unchanged for compatibility...
     
     async def _handle_transaction_history(self, user_message: str, account_number: str, 
                                          first_name: str, reasoning: Dict[str, Any], 
@@ -1205,9 +1255,10 @@ Generate a natural, security-focused response asking for OTP."""
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
             return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
 
+
     async def _analyze_spending_breakdown(self, user_message: str, account_number: str, 
-                                         first_name: str, reasoning: Dict[str, Any], 
-                                         memory: ConversationBufferMemory) -> str:
+                                     first_name: str, reasoning: Dict[str, Any], 
+                                     memory: ConversationBufferMemory) -> str:
         """Analyze what drove high spending in a specific month."""
         try:
             logger.info(f"Starting spending breakdown analysis for: {user_message}")
@@ -1279,7 +1330,12 @@ Generate a natural, security-focused response asking for OTP."""
             category_spending = {}
             
             for tx in transactions:
-                amount = tx.get("transaction_amount", 0)
+                # FIXED: Use the correct field based on your database schema
+                # Try both possible field names to ensure compatibility
+                amount = tx.get("amount_deducted_from_account", 0)
+                if amount == 0:  # Fallback to alternative field name
+                    amount = tx.get("transaction_amount", 0)
+                
                 total_spent += amount
                 
                 category = tx.get("category", "Other")
