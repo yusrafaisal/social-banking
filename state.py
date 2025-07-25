@@ -2,10 +2,63 @@
 import time
 import re
 from typing import Dict, Set, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Global state storage
 authenticated_users: Dict[str, Dict] = {}
 processed_messages: Set[str] = set()
+
+user_languages = {}  # sender_id -> language_code for each message
+user_last_languages = {}  # sender_id -> last_detected_language (for number-only messages)
+
+def set_user_language(sender_id: str, language: str):
+    """Set the current language for user's message."""
+    user_languages[sender_id] = language
+    # Also store as last language for future reference
+    user_last_languages[sender_id] = language
+    logger.info(f"Set language for user {sender_id}: {language}")
+
+def get_user_language(sender_id: str) -> str:
+    """Get the current language for user."""
+    return user_languages.get(sender_id, 'en')
+
+def get_user_last_language(sender_id: str) -> str:
+    """Get the last detected language for user (useful for number-only messages)."""
+    return user_last_languages.get(sender_id, 'en')
+
+def clear_user_language(sender_id: str):
+    """Clear language data for user."""
+    if sender_id in user_languages:
+        del user_languages[sender_id]
+    if sender_id in user_last_languages:
+        del user_last_languages[sender_id]
+
+# Update cleanup function
+def cleanup_old_user_languages():
+    """Clean up old user language data."""
+    active_users = set(authenticated_users.keys()) | set(pending_transfers.keys())
+    languages_to_remove = []
+    last_languages_to_remove = []
+    
+    for sender_id in user_languages.keys():
+        if sender_id not in active_users:
+            languages_to_remove.append(sender_id)
+    
+    for sender_id in user_last_languages.keys():
+        if sender_id not in active_users:
+            last_languages_to_remove.append(sender_id)
+    
+    for sender_id in languages_to_remove:
+        del user_languages[sender_id]
+    
+    for sender_id in last_languages_to_remove:
+        del user_last_languages[sender_id]
+    
+    if languages_to_remove or last_languages_to_remove:
+        logger.info(f"Cleaned up language data for {len(languages_to_remove)} users")
+
 
 # Updated verification stages with OTP and transfer confirmation
 VERIFICATION_STAGES = {
@@ -17,6 +70,9 @@ VERIFICATION_STAGES = {
     "TRANSFER_OTP_PENDING": "transfer_otp_pending",
     "TRANSFER_CONFIRMATION_PENDING": "transfer_confirmation_pending"  # NEW STAGE
 }
+
+# Store pending transfers for confirmation flow
+pending_transfers = {}  # sender_id -> {transfer_details, stage}
 
 def get_user_verification_stage(sender_id: str) -> str:
     """Get current verification stage for user."""
@@ -128,6 +184,18 @@ def clear_user_state(sender_id: str) -> None:
     """Clear all state for a user (logout/exit)."""
     if sender_id in authenticated_users:
         del authenticated_users[sender_id]
+    
+    # Also clear language data
+    clear_user_language(sender_id)
+
+def should_translate_for_user(sender_id: str) -> bool:
+    """Check if user needs translation based on their language preference."""
+    user_language = get_user_language(sender_id)
+    return user_language != 'en'
+
+def get_user_preferred_language(sender_id: str) -> str:
+    """Get user's preferred language for responses."""
+    return get_user_language(sender_id)
 
 def periodic_cleanup() -> None:
     """Clean up old sessions and processed messages."""
@@ -145,10 +213,14 @@ def periodic_cleanup() -> None:
     
     # Clean up old processed messages (keep only recent 1000)
     if len(processed_messages) > 1000:
-        # Convert to list, sort, and keep newest 500
-        message_list = list(processed_messages)
-        processed_messages.clear()
-        processed_messages.update(message_list[-500:])
+        oldest_messages = sorted(processed_messages)[:len(processed_messages) - 1000]
+        processed_messages.difference_update(oldest_messages)
+    
+    # Also cleanup language data
+    cleanup_old_user_languages()
+    
+    if expired_users:
+        logger.info(f"Cleaned up {len(expired_users)} expired user sessions")
 
 def get_session_stats() -> Dict:
     """Get current session statistics."""

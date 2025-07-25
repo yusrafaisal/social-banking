@@ -6,13 +6,15 @@ import os
 import requests
 import re
 from typing import Dict, Any, List
+from translation_service import translation_service
 from state import (
     authenticated_users, processed_messages, periodic_cleanup,
     VERIFICATION_STAGES, get_user_verification_stage, set_user_verification_stage,
     is_fully_authenticated, get_user_account_info, clear_user_state,
     is_otp_pending, is_transfer_otp_pending, is_valid_otp, extract_cnic_from_text,
     get_pending_transfer_info, set_pending_transfer_info, clear_pending_transfer_info,
-    is_transfer_confirmation_pending, get_user_accounts_with_details, set_user_accounts_with_details
+    is_transfer_confirmation_pending, get_user_accounts_with_details, set_user_accounts_with_details,
+    set_user_language, get_user_language, get_user_last_language, clear_user_language
 )
 import time
 import logging
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 VERIFY_TOKEN = "helloworld3"
-PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPGiZCdRaVk6KrTAiQYclW4ZCZC9e8FiC4EqdOU0zN2gLDaVC1UtXeDXYT7VtnKPyr5NV3TZAgChtsMiDhzgZBsqk6eHZA8IKUQjqlORPXIatiTbs9OekNOeFxL16xOpEM2gJKMgJLR7yo70dPCHWBTyILXZAiBLEzQt9KfZBdOYCIEGyOVDdzMDM9aey"
+PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
 
 BACKEND_URL = "http://localhost:8000"
 
@@ -70,7 +72,8 @@ async def receive_message(request: Request):
                 user_message = messaging_event["message"].get("text", "")
                 
                 if user_message.strip():
-                    response_text = await process_user_message(sender_id, user_message)
+                    # Handle translation and process message
+                    response_text = await process_multilingual_message(sender_id, user_message)
                     send_message(sender_id, response_text)
 
     if len(processed_messages) % 100 == 0:
@@ -78,6 +81,69 @@ async def receive_message(request: Request):
 
     return JSONResponse(content={"status": "ok"})
 
+async def process_multilingual_message(sender_id: str, user_message: str) -> str:
+    """Process message with language detection and translation support."""
+    
+    try:
+        # Detect language of incoming message
+        detected_language = translation_service.detect_language_smart(
+            user_message, 
+            sender_id, 
+            get_user_last_language
+        )
+        
+        # Store the detected language for this user
+        set_user_language(sender_id, detected_language)
+        
+        logger.info({
+            "action": "language_detected",
+            "sender_id": sender_id,
+            "detected_language": detected_language,
+            "original_message": user_message
+        })
+        
+        # Translate to English for processing if needed
+        if detected_language != 'en':
+            english_message = translation_service.translate_to_english(user_message, detected_language)
+            logger.info({
+                "action": "message_translated_to_english",
+                "sender_id": sender_id,
+                "original": user_message,
+                "translated": english_message,
+                "source_language": detected_language
+            })
+        else:
+            english_message = user_message
+        
+        # Process the English message through existing flow
+        english_response = await process_user_message(sender_id, english_message)
+        
+        # Translate response back to user's language if needed
+        if detected_language != 'en':
+            final_response = translation_service.translate_from_english(english_response, detected_language)
+            logger.info({
+                "action": "response_translated_to_user_language",
+                "sender_id": sender_id,
+                "english_response": english_response[:100] + "...",
+                "translated_response": final_response[:100] + "...",
+                "target_language": detected_language
+            })
+        else:
+            final_response = english_response
+        
+        return final_response
+        
+    except Exception as e:
+        logger.error({
+            "action": "multilingual_processing_error",
+            "sender_id": sender_id,
+            "error": str(e),
+            "user_message": user_message
+        })
+        
+        # Fallback to English processing
+        return await process_user_message(sender_id, user_message)
+    
 user_last_message_time = {}
 
 def is_greeting_message(message: str) -> bool:
@@ -214,6 +280,8 @@ def is_confirmation_negative(message: str) -> bool:
     ]
     
     return any(word in message_lower for word in negative_words)
+
+
 
 async def process_user_message(sender_id: str, user_message: str) -> str:
     """Process user message with enhanced features."""
@@ -824,9 +892,13 @@ async def health_check():
         backend_healthy = False
         backend_info = {}
     
+    # Check translation service status
+    translation_healthy = hasattr(translation_service, 'use_llm') and translation_service.use_llm
+    
     return {
         "status": "healthy",
         "backend_connection": "healthy" if backend_healthy else "unhealthy",
+        "translation_service": "llm_enabled" if translation_healthy else "fallback_only",
         "backend_approach": backend_info.get("approach", "unknown"),
         "timestamp": time.time(),
         "service": "banking_webhook_enhanced",
@@ -834,6 +906,8 @@ async def health_check():
             "flexible_cnic_input": "enabled",
             "smart_account_selection": "enabled", 
             "transfer_confirmation": "enabled",
+            "multilingual_support": "enabled",
+            "language_detection": "llm_enhanced" if translation_healthy else "basic",
             "authentication_flow": "cnic_otp_smart_account",
             "response_system": "ai_agent_natural_language",
             "exit_functionality": "enabled",
