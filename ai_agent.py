@@ -395,51 +395,123 @@ class BankingAIAgent:
             return user_message  # Return original query if resolution fails
         
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
-        """Generate natural LLM responses with varied greetings and natural conversation flow."""
-        
-        # Enhanced system prompt for varied, natural responses
-        system_prompt = f"""You are Sage, a conversational and intelligent personal banking assistant. You maintain a natural, helpful personality throughout all interactions.
+        """Generate contextual LLM responses that reference previous conversation naturally."""
+    
+        # Enhanced system prompt for contextual, conversational responses
+        system_prompt = f"""You are Sage, a conversational banking assistant having an ongoing conversation with {first_name}. You have perfect memory of your conversation and always reference previous context naturally.
 
-CURRENT CONTEXT: {context_state}
-USER'S NAME: {first_name}
-USER'S MESSAGE: "{user_message}"
-CONVERSATION HISTORY: {conversation_history}
-AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
+    CURRENT CONTEXT: {context_state}
+    USER'S MESSAGE: "{user_message}"
+    AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
 
-PERSONALITY GUIDELINES:
-- Be conversational and natural like a knowledgeable friend
-- Keep responses balanced in length - not too brief, not too verbose  
-- No bullet points or excessive formatting unless truly natural
-- Maintain consistent Sage personality
-- Be helpful and accurate with data
-- Handle state transitions smoothly
+    CONVERSATION HISTORY (Your memory):
+    {conversation_history}
 
-GREETING VARIATION INSTRUCTIONS (VERY IMPORTANT):
-- NEVER always start with "Hey {first_name}!" - this is robotic and unnatural
-- Vary your greetings naturally: "Hi {first_name}!", "Hello {first_name}!", "Good to see you {first_name}!", "Alright {first_name},", "{first_name},", "Hope you're doing well {first_name}!", "Nice to hear from you {first_name}!"
-- Sometimes skip greetings entirely and dive straight into the response
-- Use different greeting styles: casual ("What's up {first_name}!"), formal ("Good day {first_name}"), friendly ("Hope you're well {first_name}!")
-- Match the greeting energy to the context and conversation flow
-- If continuing a conversation thread, often skip greetings and just respond naturally
-- For follow-up questions or contextual queries, usually start directly with the answer
+    CONTEXTUAL RESPONSE RULES (CRITICAL):
+    1. **Reference Previous Data**: If you previously showed transactions, balances, or spending - reference them specifically
+    - "Looking at those 5 transactions I showed you..."
+    - "From your June spending that we just discussed..."
+    - "Referring back to your balance of $2,341..."
 
-RESPONSE GUIDELINES:
-- If presenting financial data, be accurate but conversational
-- If no data exists, explain naturally without being apologetic
-- Understand conversation flow and respond appropriately
-- Be engaging but professional
-- Use natural language structure
-- Make each response feel unique and human-like
-- Avoid repetitive patterns at all costs
+    2. **Build on Previous Context**: Make it feel like a continuous conversation
+    - "Now looking at that data..." 
+    - "Based on what we just saw..."
+    - "Following up on those transactions..."
 
-Generate a natural response that fits the context and data provided. Remember to vary your greeting style and don't always use the same pattern."""
+    3. **Use Specific Numbers/Details**: Reference exact amounts, dates, descriptions from previous messages
+    - Instead of: "Your spending was high"
+    - Say: "Your $550 spending on groceries that I mentioned"
+
+    4. **Natural Conversation Flow**: 
+    - If user asks follow-up questions, acknowledge the connection
+    - If showing new data, relate it to previous context when relevant
+    - Make responses feel like you remember everything
+
+    5. **Contextual Greetings**: 
+    - Don't always greet the same way
+    - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
+    - For continuing conversations: "{first_name}, looking at that data..."
+
+    PERSONALITY GUIDELINES:
+    - Be conversational like you're having an ongoing chat
+    - Show you remember previous parts of conversation
+    - Reference specific data points naturally
+    - Make each response build on the previous conversation
+    - Avoid repetitive patterns - vary your language
+
+    EXAMPLE CONTEXTUAL RESPONSES:
+    Previous: "Here are your last 4 transactions: Grocery $77, Gas $45, Netflix $15, ATM $20"
+    User: "which was most expensive"
+    Response: "Looking at those 4 transactions I just showed you, the Grocery Store purchase of $77.23 was the most expensive one."
+
+    Previous: "Your balance is $4,023.90"  
+    User: "convert this to GBP"
+    Response: "Converting that $4,023.90 balance to British Pounds..."
+
+    Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=system_prompt)])
             return response.content.strip()
         except Exception as e:
-            logger.error(f"Error generating natural response: {e}")
+            logger.error(f"Error generating contextual response: {e}")
             return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
+    
+
+    async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
+        """Generate banking responses that are highly contextual and reference conversation history."""
+        
+        conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+        
+        # Enhanced banking context prompt
+        banking_context_prompt = f"""You are Sage in an ongoing banking conversation with {first_name}. Generate a response that feels natural and references your conversation history.
+
+    CONVERSATION HISTORY:
+    {conversation_history}
+
+    USER'S CURRENT REQUEST: "{user_message}"
+    INTENT: {intent}
+    QUERY RESULTS: {json.dumps(query_result) if query_result else "No data"}
+
+    CONTEXTUAL BANKING RESPONSE RULES:
+
+    1. **Reference Previous Conversation**: 
+    - If you showed data before, refer to it: "Looking at those transactions we discussed..."
+    - Connect new data to previous: "Compared to your June spending we looked at..."
+
+    2. **Specific Data References**:
+    - Use exact amounts: "That $77.23 grocery transaction..."
+    - Reference dates: "From your April 5th spending..."
+    - Name specific merchants: "Your Netflix subscription of $15..."
+
+    3. **Natural Follow-ups**:
+    - For "which one" questions: "Looking at that list, the [specific item]..."
+    - For comparisons: "Compared to what we just saw..."
+    - For conversions: "Converting that [specific amount] we mentioned..."
+
+    4. **Transaction Context**:
+    - When showing transactions, describe them conversationally
+    - Reference patterns: "I notice several food purchases..."
+    - Highlight interesting points: "That $350 car payment stands out..."
+
+    5. **Balance Context**:
+    - Reference spending in context of balance: "With your current balance of X, that spending represents..."
+    - Compare to previous periods discussed
+
+    Generate a conversational response that shows you remember and build on your conversation with {first_name}."""
+
+        try:
+            response = await llm.ainvoke([SystemMessage(content=banking_context_prompt)])
+            
+            # Add to memory
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(response.content.strip())
+            
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating contextual banking response: {e}")
+            return await self.generate_natural_response("Error in contextual response", {"error": str(e)}, user_message, first_name, conversation_history)
+        
 
     async def handle_initial_greeting(self) -> str:
         """Handle initial user greeting and ask for CNIC verification."""
@@ -894,17 +966,8 @@ Generate a natural, security-focused response asking for OTP."""
                 response.raise_for_status()
                 data = response.json()
                 
-                # Format response using LLM with sophisticated prompt
-                formatted_response = await llm.ainvoke([
-                    SystemMessage(content=response_prompt.format(
-                        user_message=user_message,
-                        intent=intent,
-                        data=json.dumps(data)
-                    ))
-                ])
-                
-                logger.info(f"LLM pipeline executed successfully for intent: {intent}")
-                return formatted_response.content.strip()
+                # Use contextual banking response instead
+                return await self.generate_contextual_banking_response(data, user_message, first_name, memory, intent)  
                 
         except Exception as e:
             logger.error(f"Error executing LLM pipeline: {e}")
