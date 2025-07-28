@@ -369,3 +369,42 @@ transfer_prompt = PromptTemplate(
     Query: {user_message}
     """
 )
+
+
+
+account_selection_prompt = PromptTemplate(
+    input_variables=["user_input", "account_details"],
+    template="""
+    You are a banking assistant helping a user select their account. Analyze the user's input and return the exact account number they want to select.
+
+    User input: "{user_input}"
+    
+    Available accounts:
+    {account_details}
+
+    The user can specify accounts in various ways:
+    - Currency: "usd account", "pkr account", "my USD account", "pakistani rupee account"
+    - Position: "first account", "1st account", "second account", "2nd account", "third", etc.
+    - Account number: full account number or last 4/5/6 digits
+    - Account type: "savings account", "current account", "checking account"
+    - Natural language: "my dollar account", "rupee wala account", etc.
+
+    Rules:
+    1. If user mentions USD/dollar/$ → select USD account
+    2. If user mentions PKR/rupee/pakistani/rs → select PKR account  
+    3. If user mentions position (first, second, 1st, 2nd) → select by order in the list
+    4. If user provides digits → match against account numbers (exact match or ending digits)
+    5. If ambiguous → select the first account that matches the criteria
+    6. If no clear match → return "NO_MATCH"
+
+    Examples:
+    - "my usd account" → return the USD account number
+    - "1st account" → return the first account in the list
+    - "second" → return the second account in the list  
+    - "1234" → return account ending in 1234
+    - "12345678" → return exact account number match
+    - "savings" → return PKR account (more common for savings)
+
+    Return ONLY the exact account number (e.g., "1234567890") or "NO_MATCH" if no clear selection can be made.
+    """
+)

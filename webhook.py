@@ -2,6 +2,13 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 import httpx
+from prompts import account_selection_prompt
+ 
+# Import the prompt (add this import at the top of webhook.py)
+from prompts import account_selection_prompt
+from ai_agent import llm
+
+
 import os
 import requests
 import re
@@ -28,7 +35,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 VERIFY_TOKEN = "helloworld3"
-PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
+PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPGiZCdRaVk6KrTAiQYclW4ZCZC9e8FiC4EqdOU0zN2gLDaVC1UtXeDXYT7VtnKPyr5NV3TZAgChtsMiDhzgZBsqk6eHZA8IKUQjqlORPXIatiTbs9OekNOeFxL16xOpEM2gJKMgJLR7yo70dPCHWBTyILXZAiBLEzQt9KfZBdOYCIEGyOVDdzMDM9aey"
 
 BACKEND_URL = "http://localhost:8000"
 
@@ -210,53 +217,107 @@ async def get_account_details_from_backend(accounts: List[str]) -> List[Dict]:
     
     return account_details
 
-def smart_account_selection(user_input: str, account_details: List[Dict]) -> str:
-    """Smart account selection based on natural language input."""
-    user_input_lower = user_input.lower().strip()
-    
-    # Direct 4-digit selection (keep existing functionality)
-    if user_input.strip().isdigit() and len(user_input.strip()) == 4:
+async def smart_account_selection(user_input: str, account_details: List[Dict]) -> str:
+    """LLM-based smart account selection for natural language understanding."""
+    try:
+        # Format account details for the prompt
+        account_info = []
+        for i, account in enumerate(account_details, 1):
+            account_info.append(
+                f"{i}. Account: {account['account_number']}, Currency: {account['currency']}, "
+                f"Balance: {account.get('balance_pkr', 0)} PKR / {account.get('balance_usd', 0)} USD"
+            )
+        
+        account_details_str = "\n".join(account_info)
+       
+
+        # Use LLM to understand the selection
+        response = await ai_agent.llm.ainvoke([
+            {
+                "role": "system", 
+                "content": account_selection_prompt.format(
+                    user_input=user_input,
+                    account_details=account_details_str
+                )
+            }
+        ])
+        
+        selected_account = response.content.strip()
+        
+        # Validate the response
+        if selected_account == "NO_MATCH":
+            logger.info(f"LLM could not match account selection: {user_input}")
+            return None
+            
+        # Verify the account exists in our list
         for account in account_details:
-            if account["account_number"].endswith(user_input.strip()):
+            if account["account_number"] == selected_account:
+                logger.info(f"LLM selected account: {selected_account} for input: {user_input}")
+                return selected_account
+        
+        # Fallback: try partial matching if LLM returned partial number
+        if selected_account.isdigit():
+            for account in account_details:
+                if account["account_number"].endswith(selected_account):
+                    logger.info(f"LLM partial match: {account['account_number']} for input: {user_input}")
+                    return account["account_number"]
+        
+        logger.warning(f"LLM returned invalid account: {selected_account} for input: {user_input}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error in LLM account selection: {e}")
+        # Fallback to original logic for critical errors
+        return smart_account_selection_fallback(user_input, account_details)
+
+def smart_account_selection_fallback(user_input: str, account_details: List[Dict]) -> str:
+    """Fallback account selection logic."""
+    user_input_clean = user_input.strip()
+    
+    # Check if it's a full account number match first
+    for account in account_details:
+        if account["account_number"] == user_input_clean:
+            logger.info(f"Fallback: Exact account number match: {user_input_clean}")
+            return account["account_number"]
+    
+    # Check for partial number matches (last 4, 5, 6+ digits)
+    if user_input_clean.isdigit() and len(user_input_clean) >= 4:
+        for account in account_details:
+            if account["account_number"].endswith(user_input_clean):
+                logger.info(f"Fallback: Partial match {user_input_clean} -> {account['account_number']}")
                 return account["account_number"]
     
+    user_input_lower = user_input_clean.lower()
+    
     # Currency-based selection
-    if "usd" in user_input_lower:
+    if "usd" in user_input_lower or "dollar" in user_input_lower:
         usd_accounts = [acc for acc in account_details if acc["currency"] == "USD"]
         if usd_accounts:
-            return usd_accounts[0]["account_number"]  # Return first USD account
+            logger.info(f"Fallback: USD currency match -> {usd_accounts[0]['account_number']}")
+            return usd_accounts[0]["account_number"]
     
-    if "pkr" in user_input_lower or "rupee" in user_input_lower or "pakistani" in user_input_lower:
+    if "pkr" in user_input_lower or "rupee" in user_input_lower:
         pkr_accounts = [acc for acc in account_details if acc["currency"] == "PKR"]
         if pkr_accounts:
-            return pkr_accounts[0]["account_number"]  # Return first PKR account
+            logger.info(f"Fallback: PKR currency match -> {pkr_accounts[0]['account_number']}")
+            return pkr_accounts[0]["account_number"]
     
     # Position-based selection
     if any(word in user_input_lower for word in ["first", "1st", "one"]):
         if account_details:
+            logger.info(f"Fallback: First account -> {account_details[0]['account_number']}")
             return account_details[0]["account_number"]
     
     if any(word in user_input_lower for word in ["second", "2nd", "two"]):
         if len(account_details) > 1:
+            logger.info(f"Fallback: Second account -> {account_details[1]['account_number']}")
             return account_details[1]["account_number"]
     
-    if any(word in user_input_lower for word in ["third", "3rd", "three"]):
-        if len(account_details) > 2:
-            return account_details[2]["account_number"]
-    
-    # Account type selection
-    if any(word in user_input_lower for word in ["saving", "savings"]):
-        # Prefer PKR accounts for savings (common in Pakistan)
-        pkr_accounts = [acc for acc in account_details if acc["currency"] == "PKR"]
-        if pkr_accounts:
-            return pkr_accounts[0]["account_number"]
-    
-    if any(word in user_input_lower for word in ["current", "checking"]):
-        # Could be any account, return first
-        if account_details:
-            return account_details[0]["account_number"]
-    
-    return None  # No match found
+    logger.warning(f"Fallback: No match found for input: {user_input_clean}")
+    return None
+
+
+
 
 def is_confirmation_positive(message: str) -> bool:
     """Check if user message is a positive confirmation."""
@@ -473,6 +534,10 @@ async def handle_account_selection(sender_id: str, user_message: str) -> str:
     
     # Get detailed account information
     account_details = get_user_accounts_with_details(sender_id)
+    # Add this logging block:
+    logger.info(f"Account selection debug - User input: '{user_message}'")
+    logger.info(f"Available accounts: {[acc['account_number'] for acc in account_details]}")
+    
     
     # If no account details stored, fetch them
     if not account_details:
@@ -480,7 +545,7 @@ async def handle_account_selection(sender_id: str, user_message: str) -> str:
         set_user_accounts_with_details(sender_id, account_details)
     
     # Use smart account selection
-    selected_account = smart_account_selection(user_message, account_details)
+    selected_account = await smart_account_selection(user_message, account_details)
     
     if selected_account:
         try:
@@ -533,8 +598,21 @@ async def handle_account_selection(sender_id: str, user_message: str) -> str:
             return await ai_agent.handle_error_gracefully(e, user_message, first_name, "account_selection")
     
     else:
-        # No smart selection match, provide guidance
-        return await ai_agent.handle_account_selection(user_message, accounts, first_name)
+        # No smart selection match, provide guidance with LLM help
+        try:
+            # Use AI agent to provide helpful guidance
+            context_state = "User account selection unclear, providing helpful guidance with available options"
+            account_list = [f"{i+1}. {acc['account_number']} ({acc['currency']})" for i, acc in enumerate(account_details)]
+            data = {
+                "available_accounts": account_list,
+                "user_input": user_message,
+                "selection_examples": ["my USD account", "first account", "1234 (last 4 digits)", "PKR account"]
+            }
+            conversation_history = ""
+            return await ai_agent.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
+        except:
+            return await ai_agent.handle_account_selection(user_message, accounts, first_name)
+        
 
 async def handle_banking_queries(sender_id: str, user_message: str) -> str:
     """Handle banking queries for fully authenticated users."""
