@@ -394,11 +394,148 @@ class BankingAIAgent:
             logger.error(f"Error in contextual query resolution: {e}")
             return user_message  # Return original query if resolution fails
         
+
+
+
+    async def _determine_response_format_with_llm(self, user_message: str, data: Any, context_state: str) -> str:
+        """Use LLM to determine appropriate response format based on query complexity and data."""
+        
+        # Prepare data summary for LLM analysis
+        data_summary = self._summarize_data_for_format_analysis(data)
+        
+        format_analysis_prompt = f"""
+    You are a response format analyzer. Analyze the user query, available data, and context to determine the best response format.
+
+    USER QUERY: "{user_message}"
+    CONTEXT: {context_state}
+    DATA AVAILABLE: {data_summary}
+
+    Determine the most appropriate response format:
+
+    1. **CONCISE_ONE_LINER**: For simple, direct questions wanting a single piece of information
+    - Examples: "What's my balance?", "How much did I spend on Netflix?", "Current balance?"
+    - When data contains single values: one balance, one amount, one simple answer
+
+    2. **STRUCTURED_LIST**: For queries requesting multiple items or detailed breakdowns
+    - Examples: "Show my transactions", "List my spending by category", "Transaction history"
+    - When data contains: multiple transactions, category breakdowns, lists of items
+
+    3. **DETAILED_EXPLANATION**: For complex queries, comparisons, or when context/explanation is needed
+    - Examples: "Compare my spending", "Why is my spending high?", "Analyze my patterns"
+    - When data needs interpretation, contains errors, or requires explanation
+
+    4. **HELPFUL_GUIDANCE**: For error states, missing information, or clarification requests
+    - When context indicates errors, missing data, or user needs guidance
+
+    Analyze the query intent, data complexity, and user expectation to choose the best format.
+
+    Return ONLY one of: CONCISE_ONE_LINER, STRUCTURED_LIST, DETAILED_EXPLANATION, or HELPFUL_GUIDANCE
+    """
+
+        try:
+            response = await llm.ainvoke([SystemMessage(content=format_analysis_prompt)])
+            format_type = response.content.strip().upper()
+            
+            # Map LLM decision to formatting instructions
+            format_instructions = {
+                "CONCISE_ONE_LINER": """
+    FORMAT: CONCISE ONE-LINER
+    - Give a direct, single sentence answer with the specific number
+    - Reference previous context naturally but keep it brief
+    - No bullet points or lists needed
+    - Example: "Your current balance is $1,234.56" or "You spent $45.20 on Netflix in April"
+    """,
+                "STRUCTURED_LIST": """
+    FORMAT: STRUCTURED DATA PRESENTATION
+    - Use bullet points (•) or numbering for multiple items/transactions
+    - Organize data clearly with proper formatting
+    - Include all relevant details, amounts, dates, and descriptions
+    - Group related information logically
+    - End with a helpful summary line if appropriate
+    - Preserve ALL data - never omit important details
+    """,
+                "DETAILED_EXPLANATION": """
+    FORMAT: DETAILED EXPLANATION WITH CONTEXT
+    - Provide thorough explanation with context
+    - Include all relevant numbers and comparisons
+    - Use paragraphs and logical flow
+    - Reference previous conversation context
+    - Help user understand patterns or insights
+    - Structure with natural breaks between topics
+    """,
+                "HELPFUL_GUIDANCE": """
+    FORMAT: HELPFUL GUIDANCE
+    - Provide clear, supportive guidance
+    - Explain what's needed or what went wrong
+    - Offer specific next steps
+    - Keep it friendly and helpful
+    - Include examples if relevant
+    """
+            }
+            
+            return format_instructions.get(format_type, format_instructions["DETAILED_EXPLANATION"])
+            
+        except Exception as e:
+            logger.error(f"Error in LLM format analysis: {e}")
+            # Fallback to default detailed format
+            return """
+    FORMAT: CONVERSATIONAL RESPONSE
+    - Provide appropriate detail based on the data available
+    - Reference context naturally
+    - Include all important information
+    - Make it helpful and clear
+    """
+
+    def _summarize_data_for_format_analysis(self, data: Any) -> str:
+        """Create a summary of available data for format analysis."""
+        if not data:
+            return "No data available"
+        
+        if isinstance(data, dict):
+            summary_parts = []
+            
+            # Check for single values
+            single_values = ["current_balance", "total_spent", "total_amount"]
+            for key in single_values:
+                if key in data:
+                    summary_parts.append(f"Single value: {key}")
+            
+            # Check for lists/multiple items
+            if "transactions" in data:
+                count = len(data["transactions"]) if isinstance(data["transactions"], list) else 0
+                summary_parts.append(f"Transaction list: {count} items")
+            
+            if "category_breakdown" in data:
+                count = len(data["category_breakdown"]) if isinstance(data["category_breakdown"], list) else 0
+                summary_parts.append(f"Category breakdown: {count} categories")
+            
+            # Check for error states
+            if "error" in data or "missing" in str(data):
+                summary_parts.append("Error or missing information")
+            
+            # Check for complex analysis data
+            complex_keys = ["comparison", "analysis", "breakdown", "facet"]
+            if any(key in data for key in complex_keys):
+                summary_parts.append("Complex analysis data")
+            
+            return "; ".join(summary_parts) if summary_parts else "Simple data object"
+        
+        return f"Data type: {type(data).__name__}"
+
+
+
+
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
-        """Generate contextual LLM responses that reference previous conversation naturally."""
-    
-        # Enhanced system prompt for contextual, conversational responses
+        """Generate contextual LLM responses that reference previous conversation naturally with smart formatting."""
+
+        # Use LLM to determine response format
+        response_format_instruction = await self._determine_response_format_with_llm(user_message, data, context_state)
+        
+        # Enhanced system prompt for contextual, conversational responses with smart formatting
         system_prompt = f"""You are Sage, a conversational banking assistant having an ongoing conversation with {first_name}. You have perfect memory of your conversation and always reference previous context naturally.
+
+    RESPONSE FORMAT RULES (CRITICAL):
+    {response_format_instruction}
 
     CURRENT CONTEXT: {context_state}
     USER'S MESSAGE: "{user_message}"
@@ -439,15 +576,6 @@ class BankingAIAgent:
     - Make each response build on the previous conversation
     - Avoid repetitive patterns - vary your language
 
-    EXAMPLE CONTEXTUAL RESPONSES:
-    Previous: "Here are your last 4 transactions: Grocery $77, Gas $45, Netflix $15, ATM $20"
-    User: "which was most expensive"
-    Response: "Looking at those 4 transactions I just showed you, the Grocery Store purchase of $77.23 was the most expensive one."
-
-    Previous: "Your balance is $4,023.90"  
-    User: "convert this to GBP"
-    Response: "Converting that $4,023.90 balance to British Pounds..."
-
     Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
 
         try:
@@ -456,7 +584,10 @@ class BankingAIAgent:
         except Exception as e:
             logger.error(f"Error generating contextual response: {e}")
             return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
-    
+        
+
+
+
 
     async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
         """Generate banking responses that are highly contextual and reference conversation history."""
