@@ -84,6 +84,32 @@ filter_extraction_prompt = PromptTemplate(
         "limit": null,
         "currency": null
     }}
+
+    Query: "what was my balance on june 15th"
+    Response: {{
+        "description": null,
+        "category": null,
+        "month": null,
+        "year": null,
+        "transaction_type": null,
+        "amount_range": null,
+        "date_range": {{"start": "2025-06-15", "end": "2025-06-15"}},
+        "limit": null,
+        "currency": null
+    }}
+
+    Query: "average balance in may"
+    Response: {{
+        "description": null,
+        "category": null,
+        "month": "may",
+        "year": 2025,
+        "transaction_type": null,
+        "amount_range": null,
+        "date_range": null,
+        "limit": null,
+        "currency": null
+    }}
     
     User query: {user_message}
     ### RESPONSE FORMAT – READ CAREFULLY
@@ -125,8 +151,16 @@ pipeline_generation_prompt = PromptTemplate(
     - For ALL spending analysis, use "amount_deducted_from_account" NOT "transaction_amount"
     - For transaction history display, show both amounts but emphasize "amount_deducted_from_account"
     - "amount_deducted_from_account" represents the actual impact on the user's account
-    - "transaction_amount" is just the original transaction value which may be in different currency
+    - "transaction_amount" is just the original transaction value which may be in different currency or the account currency if that is what the user transacted in
 
+    BALANCE QUERY RULES (CRITICAL):
+    - Detect balance queries by keywords: "balance", "money", "amount", "funds" WITHOUT spending words
+    - Balance queries need the account_balance field, NOT spending calculations
+    - For "balance on [date]": Get the last transaction up to that date
+    - For "average balance in [period]": Calculate average of account_balance in that period, apply avg function
+    - Never filter by transaction type for balance queries
+    - Never sum amounts for balance queries - use the account_balance field directly
+    
     SPECIAL HANDLING FOR COMPARATIVE QUERIES:
     - For "spending more/less than" queries, create separate groups for each time period
     - Use $facet to compare multiple time periods in one pipeline
@@ -140,6 +174,7 @@ pipeline_generation_prompt = PromptTemplate(
     5. $limit - for limiting results
     6. $project - for selecting specific fields
 
+    
     CRITICAL DATE HANDLING RULES:
     - If filters contain 'date_range' with start and end dates, use EXACT date range with proper JSON format
     - If filters contain BOTH 'month' and 'year' (both not null), use full month range
@@ -170,6 +205,7 @@ pipeline_generation_prompt = PromptTemplate(
     - For transaction history, sort by date descending and _id descending
     - Handle currency filtering when specified
     - NEVER use ISODate() syntax - always use {{"$date": "ISO-string"}} format
+    - For queries asking average balance, average spending, or total spending, use $group with $avg or $sum as appropriate
 
     Examples:
 
@@ -209,7 +245,7 @@ pipeline_generation_prompt = PromptTemplate(
         {{"$group": {{"_id": null, "total_amount": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
     ]
 
-    Intent: transaction_history, Filters: {{"limit": 10}}
+    Intent: transaction_history, Filters: {{"limit": 10}} (set limit according to user query)
     Pipeline: [
         {{"$match": {{"account_number": "{account_number}"}}}},
         {{"$sort": {{"date": -1, "_id": -1}}}},
@@ -220,6 +256,20 @@ pipeline_generation_prompt = PromptTemplate(
     Pipeline: [
         {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": {{"$regex": "Food", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
         {{"$group": {{"_id": null, "total_amount": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
+    ]
+
+    Intent: balance_inquiry , Query: "what was my balance on may 15th" (BALANCE QUERY)
+    Pipeline: [
+        {{"$match": {{"account_number": "{account_number}", "date": {{"$lte": {{"$date": "2025-05-15T23:59:59.999Z"}}}}}}}},
+        {{"$sort": {{"date": -1, "_id": -1}}}},
+        {{"$limit": 1}},
+        {{"$project": {{"account_balance": 1, "date": 1, "account_currency": 1}}}}
+    ]
+
+    Intent: balance_inquiry, Query: "average balance in june" (BALANCE QUERY)
+    Pipeline: [
+        {{"$match": {{"account_number": "{account_number}", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59.999Z"}}}}}}}},
+        {{"$group": {{"_id": null, "average_balance": {{"$avg": "$account_balance"}}, "currency": {{"$first": "$account_currency"}}}}}}
     ]
 
     Return only the JSON array pipeline.

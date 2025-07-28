@@ -54,7 +54,7 @@ PIPELINE_SCHEMA = {
         "additionalProperties": False
     }
 }
-
+# === DATA MODELS ====
 class FilterExtraction(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
@@ -81,6 +81,7 @@ class ContextualQuery(BaseModel):
     clarification_needed: Optional[str] = None
     resolved_query: Optional[str] = None
 
+# === HELPER FUNCTIONS ====
 def month_to_number(month: str) -> int:
     """Convert month name to number."""
     months = {
@@ -130,6 +131,27 @@ def _json_fix(raw: str) -> str:
     fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', fixed)
     return fixed
 
+def extract_json_from_response(self, raw: str) -> Optional[Any]:
+        """Extract the first JSON value from an LLM reply."""
+        try:
+            start, end = _find_json_span(raw)
+            candidate = raw[start:end]
+        except ValueError as e:
+            logger.error({"action": "extract_json_span_fail", "error": str(e)})
+            return None
+
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        candidate = _json_fix(candidate)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logger.error({"action": "extract_json_parse_fail", "error": str(e), "candidate": candidate[:200]})
+            return None
+
 class BankingAIAgent:
     def __init__(self, mongodb_uri: str = "mongodb://localhost:27017/", db_name: str = "bank_database"):
         """Initialize the Banking AI Agent with MongoDB connection."""
@@ -139,7 +161,8 @@ class BankingAIAgent:
         self.backend_url = "http://localhost:8000"
         # Use LangChain memory directly without ConversationChain
         self.user_memories: Dict[str, ConversationBufferMemory] = {}
-        
+
+    # === MEMORY MANAGEMENT ===    
     def get_user_memory(self, account_number: str) -> ConversationBufferMemory:
         """Get or create conversation memory for a user account."""
         if account_number not in self.user_memories:
@@ -147,6 +170,723 @@ class BankingAIAgent:
                 return_messages=True
             )
         return self.user_memories[account_number]
+
+    def clear_user_memory(self, account_number: str) -> None:
+        """Clear conversation memory for a specific user account."""
+        if account_number in self.user_memories:
+            del self.user_memories[account_number]
+            logger.info(f"Cleared memory for account: {account_number}")
+    
+    def _get_context_summary(self, chat_history: List) -> str:
+        """Get an enhanced summary of recent conversation for context."""
+        if not chat_history:
+            return "No previous conversation."
+        
+        # Get last 6 messages for better context (3 exchanges)
+        recent_messages = chat_history[-6:] if len(chat_history) > 6 else chat_history
+        context_lines = []
+        
+        for i, msg in enumerate(recent_messages):
+            speaker = "Human" if i % 2 == 0 else "Assistant"
+            content = msg.content
+            
+            # Keep more content for better context but limit extremely long responses
+            if len(content) > 300:
+                content = content[:300] + "..."
+            
+            context_lines.append(f"{speaker}: {content}")
+        
+        full_context = "\n".join(context_lines)
+        
+        # If context is very long, summarize it
+        if len(full_context) > 5000:
+            try:
+                summary_prompt = f"""
+        Summarize this banking conversation context in 2-3 sentences, preserving key banking data:
+
+        {full_context}
+
+        Focus on: transaction amounts, spending categories, timeframes, and any specific data shown to the user.
+        """
+                response = llm.invoke([SystemMessage(content=summary_prompt)])
+                return response.content.strip()
+            except:
+                return full_context[:5000] + "..."
+        
+        return full_context
+
+    # === SESSION MANAGEMENT METHODS ===
+    async def handle_session_start(self, first_name: str = "", last_name: str = "") -> str:
+        """Handle session start with natural greeting."""
+        try:
+            context_state = "New user starting banking session, need CNIC verification to begin"
+            data = {
+                "session_status": "starting",
+                "authentication_required": "cnic_verification",
+                "security_level": "high",
+                "next_step": "cnic_input"
+            }
+            
+            return await self.generate_natural_response(context_state, data, "", first_name or "there")
+            
+        except Exception as e:
+            logger.error(f"Error in session start: {e}")
+            context_state = "Error occurred during session initialization"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, "", first_name or "there")
+
+    async def handle_session_end(self, account_number: str, first_name: str) -> str:
+        """Handle session termination with natural response."""
+        try:
+            # Clear user memory for security
+            if account_number in self.user_memories:
+                del self.user_memories[account_number]
+            
+            context_state = "User ending banking session, providing secure farewell and cleanup confirmation"
+            data = {
+                "session_ended": True,
+                "security_cleared": True,
+                "memory_cleared": True,
+                "restart_instructions": True
+            }
+            
+            return await self.generate_natural_response(context_state, data, "exit", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error ending session: {e}")
+            context_state = "Error occurred while ending session securely"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, "exit", first_name)
+
+    # === INITIAL GREETING HANDLING ===
+    async def handle_initial_greeting(self) -> str:
+        """Handle initial user greeting and ask for CNIC verification."""
+        try:
+            greeting_prompt = """You are Sage, a friendly banking assistant. A user just greeted you (said hi, hello, etc.) to start a new banking session.
+
+        Your task:
+        1. Greet them warmly and introduce yourself as their banking assistant
+        2. Explain that you can help with their banking needs
+        3. Ask them to provide their CNIC for secure verification
+        4. Mention the CNIC format (12345-1234567-1) 
+        5. Keep it friendly and welcoming
+
+        Generate a natural, welcoming response that guides them to the next step."""
+
+            response = await llm.ainvoke([SystemMessage(content=greeting_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating initial greeting: {e}")
+            return "Hello! I'm Sage, your banking assistant. I'm here to help you with all your banking needs. To get started securely, could you please provide your CNIC in the format 12345-1234567-1?"
+        
+    def _is_simple_greeting_or_general(self, user_message: str) -> bool:
+        """Check if message is a simple greeting or general question."""
+        user_lower = user_message.lower().strip()
+        
+        # Simple greetings
+        greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
+        if any(user_lower.startswith(greeting) for greeting in greetings):
+            return True
+            
+        # General questions
+        general_phrases = ["what can you do", "help me", "what do you do", "how can you help"]
+        if any(phrase in user_lower for phrase in general_phrases):
+            return True
+            
+        return False
+    
+    # === OTP HANDLING ===
+    async def handle_otp_request(self, first_name: str = "") -> str:
+        """Handle OTP request after CNIC verification."""
+        try:
+            otp_prompt = f"""You are Sage, a banking assistant. A user has just had their CNIC verified successfully and now needs to provide an OTP for additional security.
+
+        Your task:
+        1. Explain that for additional security, they need to provide an OTP
+        2. Tell them the OTP is a number between 1-5 digits sent to your mobile phone
+        3. Ask them to enter their OTP
+        4. Keep it simple and secure-sounding
+
+        Generate a natural, security-focused response asking for OTP."""
+
+            response = await llm.ainvoke([SystemMessage(content=otp_prompt)])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating OTP request: {e}")
+            return f"Great! For additional security, {first_name}, please provide an OTP. You should have received an OTP (1-5 digits) on your mobile phone."
+
+    async def handle_otp_success(self, user_name: str, accounts: List[str]) -> str:
+        """Handle successful OTP verification."""
+        try:
+            first_name = user_name.split()[0]
+            context_state = "OTP verification successful, user can now select account"
+            data = {
+                "otp_verified": True,
+                "user_name": user_name,
+                "accounts": accounts,
+                "next_step": "account_selection"
+            }
+            
+            return await self.generate_natural_response(context_state, data, "otp_verified", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in OTP success: {e}")
+            return "OTP verified successfully! Now please select your account by entering the last 4 digits."
+
+    async def handle_otp_failure(self, user_input: str, first_name: str = "") -> str:
+        """Handle failed OTP verification."""
+        try:
+            context_state = "OTP verification failed, need valid 1-5 digit number"
+            data = {
+                "otp_failed": True,
+                "user_input": user_input,
+                "required_format": "1-5 digits"
+            }
+            
+            return await self.generate_natural_response(context_state, data, user_input, first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in OTP failure: {e}")
+            return f"Sorry {first_name}, that OTP format isn't valid. Please enter a number between 1-5 digits."
+
+    # === CNIC VERIFICATION METHODS ===
+    async def handle_cnic_verification_success(self, user_name: str, accounts: List[str], cnic: str) -> str:
+        """Handle successful CNIC verification with natural response."""
+        try:
+            context_state = "CNIC verification successful, now requesting OTP for additional security"
+            data = {
+                "verification_status": "success",
+                "user_name": user_name,
+                "accounts_found": len(accounts),
+                "accounts": accounts,
+                "next_step": "otp_verification",
+                "otp_format": "1-5 digits"
+            }
+            
+            return await self.generate_natural_response(context_state, data, cnic, user_name.split()[0])
+            
+        except Exception as e:
+            logger.error(f"Error in CNIC verification success: {e}")
+            context_state = "Error occurred after successful CNIC verification"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, cnic, user_name.split()[0])
+
+    async def handle_cnic_verification_failure(self, cnic: str, first_name: str = "") -> str:
+        """Handle failed CNIC verification with natural response."""
+        try:
+            context_state = "CNIC verification failed, user needs to try again with correct format"
+            data = {
+                "verification_status": "failed",
+                "provided_cnic": cnic,
+                "required_format": "12345-1234567-1",
+                "retry_needed": True
+            }
+            
+            return await self.generate_natural_response(context_state, data, cnic, first_name or "there")
+            
+        except Exception as e:
+            logger.error(f"Error in CNIC verification failure: {e}")
+            context_state = "Error occurred during CNIC verification failure handling"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, cnic, first_name or "there")
+
+    async def handle_invalid_cnic_format(self, user_input: str, first_name: str = "") -> str:
+        """Handle invalid CNIC format with natural response."""
+        try:
+            context_state = "User provided invalid CNIC format, need guidance on correct format"
+            data = {
+                "input_provided": user_input,
+                "format_error": True,
+                "required_format": "12345-1234567-1",
+                "format_rules": {
+                    "part1": "5 digits",
+                    "separator1": "dash (-)",
+                    "part2": "7 digits", 
+                    "separator2": "dash (-)",
+                    "part3": "1 digit"
+                }
+            }
+            
+            return await self.generate_natural_response(context_state, data, user_input, first_name or "there")
+            
+        except Exception as e:
+            logger.error(f"Error in invalid CNIC format handling: {e}")
+            context_state = "Error occurred while handling invalid CNIC format"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, user_input, first_name or "there")
+        
+    # === ACCOUNT SELECTION METHODS ===
+
+    async def handle_account_selection(self, selection: str, accounts: List[str], first_name: str) -> str:
+        """Handle account selection with natural response."""
+        try:
+            context_state = "User provided account selection input, providing guidance"
+            data = {
+                "available_accounts": accounts,
+                "user_input": selection,
+                "expected_format": "last_4_digits",
+                "selection_method": "last_4_digits"
+            }
+            
+            return await self.generate_natural_response(context_state, data, selection, first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in account selection: {e}")
+            context_state = "Error occurred during account selection"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, selection, first_name)
+
+    async def handle_account_confirmation(self, account_number: str, user_name: str) -> str:
+        """Handle account selection confirmation with natural response."""
+        try:
+            first_name = user_name.split()[0]
+            context_state = "Account successfully selected and confirmed, user ready for full banking operations"
+            data = {
+                "account_confirmed": True,
+                "account_number": account_number,
+                "masked_account": f"***-***-{account_number[-4:]}",
+                "user_name": user_name,
+                "ready_for_banking": True,
+                "available_services": [
+                    "balance_inquiry",
+                    "spending_analysis", 
+                    "transaction_history",
+                    "money_transfer",
+                    "financial_planning"
+                ]
+            }
+            
+            return await self.generate_natural_response(context_state, data, account_number, first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in account confirmation: {e}")
+            context_state = "Error occurred during account confirmation"
+            return await self.generate_natural_response(context_state, {"error": str(e)}, account_number, user_name.split()[0])
+        
+    # === QUERY PIPELINE FLOW ===
+    def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
+        """Detect intent using LLM for more flexible understanding."""
+        try:
+            response = llm.invoke([
+                SystemMessage(content=intent_prompt.format(
+                    user_message=user_message,
+                    filters=json.dumps(filters.dict())
+                ))
+            ])
+            
+            detected_intent = response.content.strip().lower()
+            
+            valid_intents = [
+                "balance_inquiry",
+                "transaction_history", 
+                "spending_analysis",
+                "category_spending",
+                "transfer_money",
+                "general"
+            ]
+            
+            if detected_intent in valid_intents:
+                return detected_intent
+            else:
+                for intent in valid_intents:
+                    if intent in detected_intent:
+                        return intent
+                return "general"
+                
+        except Exception as e:
+            logger.error({
+                "action": "llm_intent_classification",
+                "error": str(e),
+                "user_message": user_message
+            })
+            return "general"
+
+    def extract_filters_with_llm(self, user_message: str) -> FilterExtraction:
+        """Use LLM to extract filters from user query with enhanced date handling."""
+        try:
+            response = llm.invoke([SystemMessage(content=filter_extraction_prompt.format(
+                user_message=user_message,
+                current_date=datetime.now().strftime("%Y-%m-%d")
+            ))])
+            
+            try:
+                filters_obj = self.extract_json_from_response(response.content)
+                if filters_obj is None:
+                    raise ValueError("Could not parse filter JSON")
+                filters = FilterExtraction(**filters_obj)
+                logger.info(f"LLM extracted filters: {filters.dict()}")
+                return filters
+            
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error({
+                    "action": "filter_extraction_parse_error",
+                    "error": str(e),
+                    "raw_response": response.content
+                })
+                return FilterExtraction()
+                
+        except Exception as e:
+            logger.error({
+                "action": "extract_filters_with_llm",
+                "error": str(e)
+            })
+            return FilterExtraction()
+
+    def generate_pipeline_from_filters(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
+        """Generate MongoDB pipeline from extracted filters using LLM."""
+        try:
+            response = llm.invoke([
+                SystemMessage(content=pipeline_generation_prompt.format(
+                    filters=json.dumps(filters.dict()),
+                    intent=intent,
+                    account_number=account_number
+                ))
+            ])
+            
+            cleaned_response = self.extract_json_from_response(response.content)
+        
+            if not cleaned_response:
+                return self._generate_fallback_pipeline(filters, intent, account_number)
+            
+            pipeline = cleaned_response
+            jsonschema.validate(pipeline, PIPELINE_SCHEMA)
+            return pipeline
+            
+        except Exception as e:
+            logger.error({
+                "action": "generate_pipeline_from_filters",
+                "error": str(e)
+            })
+            return self._generate_fallback_pipeline(filters, intent, account_number)
+
+    async def _execute_llm_pipeline(self, account_number: str, pipeline: List[Dict[str, Any]], 
+                              user_message: str, first_name: str, memory: ConversationBufferMemory, 
+                              intent: str, is_balance_query: bool = False) -> str:
+        """Execute LLM-generated pipeline and format response naturally."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.backend_url}/execute_pipeline",
+                    json={"account_number": account_number, "pipeline": pipeline}
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                # NEW: Set appropriate context state for balance queries
+                if is_balance_query:
+                    context_state = "User requested filtered balance information, providing balance data from pipeline results"
+                    conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+                    return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
+                else:
+                    # Use contextual banking response for other queries
+                    return await self.generate_contextual_banking_response(data, user_message, first_name, memory, intent) 
+                
+        except Exception as e:
+            logger.error(f"Error executing LLM pipeline: {e}")
+            context_state = "Error occurred while executing database query"
+            conversation_history = self._get_context_summary(memory.chat_memory.messages)
+            return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
+
+    async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
+        """Enhanced process query with contextual awareness and query resolution."""
+        memory = self.get_user_memory(account_number)
+
+        logger.info({
+            "action": "process_query_start",
+            "approach": "context_aware_llm_first",
+            "user_message": user_message,
+            "account_number": account_number
+        })
+
+        # Check for exit command first
+        if user_message.lower().strip() in ['exit', 'quit', 'logout', 'end']:
+            response = await self.handle_session_end(account_number, first_name)
+            return response
+
+        # Get conversation history for context
+        conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+        
+        # Handle greetings and simple queries
+        if self._is_simple_greeting_or_general(user_message):
+            context_state = "User sent a greeting or general question, no specific banking data needed"
+            response = await self.generate_natural_response(context_state, None, user_message, first_name, conversation_history)
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(response)
+            return response
+        # NEW: Check for currency conversion requests
+        if self.detect_currency_conversion_intent(user_message, conversation_history):
+            logger.info(f"Currency conversion intent detected for: {user_message}")
+            return await self.handle_currency_conversion(user_message, conversation_history, first_name, memory)
+
+        # ENHANCED: Context-aware non-banking filter
+        if self.is_clearly_non_banking_query(user_message, conversation_history):
+            logger.info(f"Context-aware filter blocked non-banking query: {user_message}")
+            response = await self.handle_non_banking_query(user_message, first_name)
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(response)
+            return response
+
+        # NEW: Resolve contextual queries into standalone queries
+        original_message = user_message
+        resolved_query = self.resolve_contextual_query(user_message, conversation_history)
+        
+        if resolved_query != original_message:
+            logger.info(f"Using resolved query for processing: '{resolved_query}'")
+            processing_message = resolved_query
+        else:
+            processing_message = user_message
+
+        # PRIMARY PATH: LLM-FIRST APPROACH with resolved query
+        try:
+            logger.info("Attempting context-aware LLM-first approach")
+            
+            # Step 1: Extract filters using resolved query
+            filters = self.extract_filters_with_llm(processing_message)
+            logger.info(f"LLM extracted filters from resolved query: {filters.dict()}")
+            
+            # Step 2: Detect intent using resolved query
+            intent = self.detect_intent_from_filters(processing_message, filters)
+            logger.info(f"LLM detected intent: {intent}")
+            
+            # Step 3: Handle based on intent (same as before)
+            if intent == "balance_inquiry":
+                # Generate pipeline for balance inquiry
+                pipeline = self.generate_pipeline_from_filters(filters, intent, account_number)
+                return await self._execute_llm_pipeline(
+                    account_number=account_number,
+                    pipeline=pipeline,
+                    user_message=user_message,
+                    first_name=first_name,
+                    memory=memory,
+                    intent=intent,
+                    is_balance_query=True  # Pass flag for balance-specific handling
+                )
+            
+            elif intent == "transfer_money":
+                response = await self._handle_money_transfer_with_otp(account_number, original_message, first_name, memory)
+                memory.chat_memory.add_user_message(original_message)
+                memory.chat_memory.add_ai_message(response)
+                return response
+            
+            # In the section where intent is handled, modify the spending_analysis case:
+            elif intent in ["transaction_history", "spending_analysis", "category_spending"]:
+                # Step 4: Generate pipeline using resolved query
+                pipeline = self.generate_pipeline_from_filters(filters, intent, account_number)
+                logger.info(f"LLM generated pipeline from resolved query: {pipeline}")
+                
+                # NEW: Determine if this is a balance query based on original message
+                is_balance_query = any(keyword in original_message.lower() for keyword in ["balance", "money", "amount", "funds"])
+                
+                # Step 5: Execute with original message for natural response
+                if pipeline:
+                    try:
+                        jsonschema.validate(pipeline, PIPELINE_SCHEMA)
+                        # Pass is_balance_query flag to execution method
+                        response = await self._execute_llm_pipeline(account_number, pipeline, original_message, first_name, memory, intent, is_balance_query)
+                        memory.chat_memory.add_user_message(original_message)
+                        memory.chat_memory.add_ai_message(response)
+                        return response
+                    except jsonschema.ValidationError as e:
+                        logger.warning(f"LLM pipeline validation failed: {e}")
+                        raise Exception("Pipeline validation failed")
+                else:
+                    raise Exception("Empty pipeline generated")
+            
+            else:
+                # General or contextual query
+                context_state = "General banking assistance or contextual query with history"
+                response = await self.generate_natural_response(context_state, {"resolved_query": resolved_query}, original_message, first_name, conversation_history)
+                memory.chat_memory.add_user_message(original_message)
+                memory.chat_memory.add_ai_message(response)
+                return response
+                
+        except Exception as llm_error:
+            logger.warning(f"Context-aware LLM approach failed: {llm_error}. Falling back.")
+            
+            # FALLBACK PATH with resolved query
+            try:
+                logger.info("Using contextual fallback approach")
+                reasoning_result = await self._reason_about_query(processing_message, memory, account_number, first_name)
+                
+                # Handle with fallback methods using original message for response
+                if reasoning_result.get("action_needed") == "balance_check":
+                    response = await self._handle_balance_inquiry(account_number, first_name, original_message, memory)
+                elif reasoning_result.get("action_needed") == "transaction_history":
+                    response = await self._handle_transaction_history(original_message, account_number, first_name, reasoning_result, memory)
+                elif reasoning_result.get("action_needed") == "sophisticated_analysis":
+                    response = await self._handle_sophisticated_analysis(original_message, account_number, first_name, reasoning_result, memory)
+                else:
+                    context_state = "Fallback - providing contextual assistance"
+                    response = await self.generate_natural_response(context_state, {"resolved_query": resolved_query}, original_message, first_name, conversation_history)
+                
+                memory.chat_memory.add_user_message(original_message)
+                memory.chat_memory.add_ai_message(response)
+                return response
+                
+            except Exception as fallback_error:
+                logger.error(f"Both context-aware LLM and fallback failed: {fallback_error}")
+                context_state = "Error in contextual processing"
+                response = await self.generate_natural_response(context_state, {"error": str(fallback_error), "resolved_query": resolved_query}, original_message, first_name, conversation_history)
+                memory.chat_memory.add_user_message(original_message)
+                memory.chat_memory.add_ai_message(response)
+                return response
+
+    # === HANDLE MONEY TRANSFERS ===
+    async def handle_transfer_otp_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
+        """Handle OTP request for money transfer."""
+        try:
+            context_state = "Transfer details collected, requesting OTP for security"
+            data = {
+                "transfer_amount": amount,
+                "transfer_currency": currency,
+                "transfer_recipient": recipient,
+                "otp_required": True
+            }
+            
+            return await self.generate_natural_response(context_state, data, f"transfer {amount} {currency} to {recipient}", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in transfer OTP request: {e}")
+            return f"To complete the transfer of {amount} {currency} to {recipient}, please provide an OTP (any number between 1-5 digits) for security verification."
+
+    async def handle_transfer_otp_success(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
+        """Handle successful transfer OTP verification."""
+        try:
+            context_state = "Transfer OTP verified, ready to proceed with transfer"
+            data = {
+                "otp_verified": True,
+                "transfer_amount": amount,
+                "transfer_currency": currency,
+                "transfer_recipient": recipient,
+                "ready_to_transfer": True
+            }
+            
+            return await self.generate_natural_response(context_state, data, "transfer_otp_verified", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in transfer OTP success: {e}")
+            return f"OTP verified! I'll now proceed with transferring {amount} {currency} to {recipient}."
+        
+    async def _handle_money_transfer_with_otp(self, account_number: str, user_message: str, 
+                                            first_name: str, memory: ConversationBufferMemory) -> str:
+        """Handle money transfer with OTP requirement (returns 'OTP_REQUIRED' for webhook to handle)."""
+        try:
+            # Use sophisticated transfer prompt
+            response = await llm.ainvoke([SystemMessage(content=transfer_prompt.format(user_message=user_message))])
+            transfer_details = self.extract_json_from_response(response.content)
+            
+            if not transfer_details:
+                context_state = "Transfer details could not be understood, need clarification"
+                conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                return await self.generate_natural_response(context_state, {"missing": "transfer_details"}, user_message, first_name, conversation_history)
+
+            # Check completeness
+            missing_parts = []
+            if not transfer_details.get("amount") or transfer_details.get("amount") <= 0:
+                missing_parts.append("amount")
+            if not transfer_details.get("recipient"):
+                missing_parts.append("recipient")
+            
+            if missing_parts:
+                context_state = f"Transfer request incomplete, missing: {', '.join(missing_parts)}"
+                data = {
+                    "missing_info": missing_parts,
+                    "provided_amount": transfer_details.get("amount"),
+                    "provided_recipient": transfer_details.get("recipient"),
+                    "currency": transfer_details.get("currency", "PKR")
+                }
+                conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
+            
+            # If transfer details are complete, return special signal for OTP
+            # The webhook will handle the OTP flow
+            return f"OTP_REQUIRED|{transfer_details['amount']}|{transfer_details.get('currency', 'PKR')}|{transfer_details['recipient']}"
+                
+        except Exception as e:
+            logger.error(f"Error in money transfer with OTP: {e}")
+            context_state = "Error occurred during money transfer processing"
+            conversation_history = self._get_context_summary(memory.chat_memory.messages)
+            return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
+
+    async def execute_verified_transfer(self, account_number: str, amount: float, currency: str, recipient: str, first_name: str, memory: ConversationBufferMemory) -> str:
+        """Execute the transfer after OTP verification."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.backend_url}/transfer_money",
+                    json={
+                        "from_account": account_number,
+                        "to_recipient": recipient,
+                        "amount": amount,
+                        "currency": currency
+                    }
+                )
+                response.raise_for_status()
+                transfer_result = response.json()
+                
+                context_state = "Transfer executed successfully after OTP verification" if transfer_result.get("status") == "success" else "Transfer failed after OTP verification"
+                conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                
+                return await self.generate_natural_response(context_state, transfer_result, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
+                
+        except Exception as e:
+            logger.error(f"Error executing verified transfer: {e}")
+            context_state = "Error occurred during transfer execution"
+            conversation_history = self._get_context_summary(memory.chat_memory.messages)
+            return await self.generate_natural_response(context_state, {"error": str(e)}, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
+        
+    async def handle_transfer_confirmation_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
+        """Handle transfer confirmation request after OTP verification."""
+        try:
+            context_state = "Transfer OTP verified, now requesting user confirmation before executing transfer"
+            data = {
+                "otp_verified": True,
+                "transfer_amount": amount,
+                "transfer_currency": currency,
+                "transfer_recipient": recipient,
+                "confirmation_required": True,
+                "confirmation_options": ["yes", "no", "confirm", "cancel"]
+            }
+            
+            return await self.generate_natural_response(context_state, data, f"confirm transfer {amount} {currency} to {recipient}", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in transfer confirmation request: {e}")
+            return f"OTP verified! Do you want to confirm the transfer of {amount} {currency} to {recipient}? Please reply with 'yes' to confirm or 'no' to cancel."
+
+    async def handle_transfer_cancellation(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
+        """Handle transfer cancellation when user declines confirmation."""
+        try:
+            context_state = "User cancelled transfer during confirmation step, providing cancellation confirmation"
+            data = {
+                "transfer_cancelled": True,
+                "cancelled_amount": amount,
+                "cancelled_currency": currency,
+                "cancelled_recipient": recipient,
+                "account_secure": True,
+                "ready_for_new_requests": True
+            }
+            
+            return await self.generate_natural_response(context_state, data, f"cancel transfer {amount} {currency} to {recipient}", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in transfer cancellation: {e}")
+            return f"Transfer cancelled, {first_name}. The transfer of {amount} {currency} to {recipient} has been stopped and your account is secure. Is there anything else I can help you with?"
+
+    async def handle_transfer_confirmation_clarification(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
+        """Handle unclear confirmation response and ask for clarification."""
+        try:
+            context_state = "User provided unclear confirmation response, requesting clear yes/no answer"
+            data = {
+                "confirmation_unclear": True,
+                "transfer_amount": amount,
+                "transfer_currency": currency,
+                "transfer_recipient": recipient,
+                "clarification_needed": True,
+                "clear_options": ["yes/confirm", "no/cancel"]
+            }
+            
+            return await self.generate_natural_response(context_state, data, f"clarify transfer confirmation {amount} {currency} to {recipient}", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in transfer confirmation clarification: {e}")
+            return f"I want to make sure, {first_name}. Do you want to proceed with transferring {amount} {currency} to {recipient}? Please reply with 'yes' to confirm or 'no' to cancel."
+            
+    # == CURRENCY CONVERSION HANDLING ===
     def detect_currency_conversion_intent(self, user_message: str, conversation_history: str) -> bool:
         """Detect if user wants to convert currency amounts."""
         try:
@@ -245,162 +985,11 @@ class BankingAIAgent:
             return await self.generate_natural_response(
                 context_state, {"error": str(e)}, user_message, first_name, conversation_history
             )
-        
 
-
-    def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
-        """Check if user query is clearly non-banking using context-aware LLM filtering."""
-        try:
-            user_message_lower = user_message.lower().strip()
-            
-            # Only keep the most obvious non-banking patterns (very minimal)
-            extremely_obvious_patterns = [
-                r'^who is (the )?president',
-                r'^what.*(weather|temperature)',
-                r'^tell me a joke',
-                r'^what time is it'
-            ]
-            
-            # Check only for extremely obvious non-banking patterns
-            for pattern in extremely_obvious_patterns:
-                if re.match(pattern, user_message_lower):
-                    logger.info(f"Blocked extremely obvious non-banking query: '{user_message}' (pattern: {pattern})")
-                    return True
-            
-            # Use context-aware LLM for all other queries
-            context_aware_filter_prompt = f"""
-    You are a banking assistant filter that processes queries WITH CONTEXT. This assistant ONLY handles queries about the user's OWN account data.
-
-    CONVERSATION HISTORY:
-    {conversation_history}
-
-    CURRENT QUERY: "{user_message}"
-
-    CONTEXT-AWARE ANALYSIS:
-    - If the conversation history shows banking context (transactions, balance, spending), then contextual queries should be ALLOWED
-    - If user just saw transaction data and asks "which one is most expensive" or "total kitna hai" or "mujhey inka total kite batao" - this is BANKING
-    - If user asks follow-up questions about previously shown data - this is BANKING  
-    - If user asks in Roman Urdu or mixed languages but refers to banking data - this is BANKING
-    - If no banking context exists, then general questions should be blocked
-
-    ONLY respond "NO" (allow) if the query is:
-    1. SPECIFICALLY about user's account data ("my balance", "my transactions")
-    2. A CONTEXTUAL follow-up to banking data already shown ("which one", "total", "most expensive", "inka total", "kitna", "kya hai")
-    3. Money transfers ("transfer money to X", "send money")
-    4. Account authentication queries
-    5. Roman Urdu banking queries ("mera balance kitna hai", "total kitna tha")
-
-    RESPOND "YES" (block) for:
-    - General banking questions ("best bank in Pakistan") 
-    - Investment advice or banking policies
-    - Other people's accounts
-    - Truly non-banking topics (when no banking context exists)
-    - Weather, politics, entertainment (only when NO banking context)
-
-    CONTEXTUAL EXAMPLES:
-    History: "Here are your last 4 transactions..." 
-    Query: "which one is most expensive" → "NO" (allow - contextual banking)
-
-    History: "You spent $77.23 on groceries"
-    Query: "mujhey inka total kite batao" → "NO" (allow - contextual banking)
-
-    History: "Your June transactions: Foodpanda $14.01, Grocery $53.44..."
-    Query: "inka total kitna hai in usd" → "NO" (allow - contextual banking)
-
-    History: (empty/no banking context)
-    Query: "what's the weather" → "YES" (block - non-banking)
-
-    History: (empty/no banking context) 
-    Query: "best bank in pakistan" → "YES" (block - general banking)
-
-    Respond with only "YES" (block) or "NO" (allow).
-    """
-            
-            response = llm.invoke([SystemMessage(content=context_aware_filter_prompt)])
-            result = response.content.strip().upper()
-            
-            if result == "YES":
-                logger.info(f"Context-aware LLM blocked non-banking query: '{user_message}'")
-                return True
-            else:
-                logger.info(f"Context-aware LLM allowed query: '{user_message}'")
-                return False
-            
-        except Exception as e:
-            logger.error(f"Error in context-aware non-banking filter: {e}")
-            # If filter fails, err on the side of allowing the query
-            logger.info(f"Filter error - allowing query: '{user_message}'")
-            return False
-
-    def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
-        """Convert contextual queries into standalone queries using conversation history."""
-        try:
-            if not conversation_history or len(conversation_history.strip()) < 10:
-                return user_message  # No context to work with
-            
-            contextual_resolution_prompt = f"""
-    You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
-
-    CONVERSATION HISTORY:
-    {conversation_history}
-
-    CURRENT CONTEXTUAL QUERY: "{user_message}"
-
-    Your task: If the current query is contextual (refers to previous data), create a standalone query that includes all necessary context.
-
-    EXAMPLES:
-
-    History: "Here are your last 4 transactions: 1. Hamza transfer $35, 2. Grocery Store $77.23, 3. Car Loan $350.69, 4. Withdrawal $117.19"
-    Query: "which one is most expensive" 
-    → "show me the most expensive transaction from my recent transaction history"
-
-    History: "You spent $77.23 at Grocery Store on June 29"
-    Query: "mujhey inka total kite batao in usd"
-    → "what is my total spending amount in USD"
-
-    History: "Your June spending: Food $100, Travel $200, Shopping $150"
-    Query: "food ka kitna tha"
-    → "how much did I spend on food in June"
-
-    History: "Your balance is $4023.90"
-    Query: "kya main 5000 afford kar sakta hun"
-    → "can I afford $5000 based on my current balance"
-
-    History: "Your last 4 transactions: Foodpanda $14.01, Grocery Store $53.44, Car Loan $350.69, Withdrawal $117.19"
-    Query: "mujhey inka total kite batao in usd"
-    → "what is the total amount of my recent transactions in USD"
-
-    RULES:
-    1. If the query is already standalone (contains complete context), return it unchanged
-    2. If the query references previous data ("which one", "inka total", "that transaction"), resolve it with context
-    3. Preserve the user's intent while making it standalone
-    4. Convert to English if needed for processing
-    5. Include relevant timeframes, amounts, or categories from history
-
-    RESOLVED STANDALONE QUERY:
-    """
-            
-            response = llm.invoke([SystemMessage(content=contextual_resolution_prompt)])
-            resolved_query = response.content.strip()
-            
-            # Remove any quotes or extra formatting
-            if resolved_query.startswith('"') and resolved_query.endswith('"'):
-                resolved_query = resolved_query[1:-1]
-            
-            logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
-            return resolved_query
-            
-        except Exception as e:
-            logger.error(f"Error in contextual query resolution: {e}")
-            return user_message  # Return original query if resolution fails
-        
-
-
-
+    # === NATURAL LANGUAGE RESPONSE GENERATION ===
     async def _determine_response_format_with_llm(self, user_message: str, data: Any, context_state: str) -> str:
         """Use LLM to determine appropriate response format based on query complexity and data."""
-        
-        # Prepare data summary for LLM analysis
+    
         data_summary = self._summarize_data_for_format_analysis(data)
         
         format_analysis_prompt = f"""
@@ -431,7 +1020,6 @@ class BankingAIAgent:
 
     Return ONLY one of: CONCISE_ONE_LINER, STRUCTURED_LIST, DETAILED_EXPLANATION, or HELPFUL_GUIDANCE
     """
-
         try:
             response = await llm.ainvoke([SystemMessage(content=format_analysis_prompt)])
             format_type = response.content.strip().upper()
@@ -439,38 +1027,38 @@ class BankingAIAgent:
             # Map LLM decision to formatting instructions
             format_instructions = {
                 "CONCISE_ONE_LINER": """
-    FORMAT: CONCISE ONE-LINER
-    - Give a direct, single sentence answer with the specific number
-    - Reference previous context naturally but keep it brief
-    - No bullet points or lists needed
-    - Example: "Your current balance is $1,234.56" or "You spent $45.20 on Netflix in April"
-    """,
-                "STRUCTURED_LIST": """
-    FORMAT: STRUCTURED DATA PRESENTATION
-    - Use bullet points (•) or numbering for multiple items/transactions
-    - Organize data clearly with proper formatting
-    - Include all relevant details, amounts, dates, and descriptions
-    - Group related information logically
-    - End with a helpful summary line if appropriate
-    - Preserve ALL data - never omit important details
-    """,
-                "DETAILED_EXPLANATION": """
-    FORMAT: DETAILED EXPLANATION WITH CONTEXT
-    - Provide thorough explanation with context
-    - Include all relevant numbers and comparisons
-    - Use paragraphs and logical flow
-    - Reference previous conversation context
-    - Help user understand patterns or insights
-    - Structure with natural breaks between topics
-    """,
-                "HELPFUL_GUIDANCE": """
-    FORMAT: HELPFUL GUIDANCE
-    - Provide clear, supportive guidance
-    - Explain what's needed or what went wrong
-    - Offer specific next steps
-    - Keep it friendly and helpful
-    - Include examples if relevant
-    """
+            FORMAT: CONCISE ONE-LINER
+            - Give a direct, single sentence answer with the specific number
+            - Reference previous context naturally but keep it brief
+            - No bullet points or lists needed
+            - Example: "Your current balance is $1,234.56" or "You spent $45.20 on Netflix in April"
+            """,
+                        "STRUCTURED_LIST": """
+            FORMAT: STRUCTURED DATA PRESENTATION
+            - Use bullet points (•) or numbering for multiple items/transactions
+            - Organize data clearly with proper formatting
+            - Include all relevant details, amounts, dates, and descriptions
+            - Group related information logically
+            - End with a helpful summary line if appropriate
+            - Preserve ALL data - never omit important details
+            """,
+                        "DETAILED_EXPLANATION": """
+            FORMAT: DETAILED EXPLANATION WITH CONTEXT
+            - Provide thorough explanation with context
+            - Include all relevant numbers and comparisons
+            - Use paragraphs and logical flow
+            - Reference previous conversation context
+            - Help user understand patterns or insights
+            - Structure with natural breaks between topics
+            """,
+                        "HELPFUL_GUIDANCE": """
+            FORMAT: HELPFUL GUIDANCE
+            - Provide clear, supportive guidance
+            - Explain what's needed or what went wrong
+            - Offer specific next steps
+            - Keep it friendly and helpful
+            - Include examples if relevant
+            """
             }
             
             return format_instructions.get(format_type, format_instructions["DETAILED_EXPLANATION"])
@@ -479,12 +1067,12 @@ class BankingAIAgent:
             logger.error(f"Error in LLM format analysis: {e}")
             # Fallback to default detailed format
             return """
-    FORMAT: CONVERSATIONAL RESPONSE
-    - Provide appropriate detail based on the data available
-    - Reference context naturally
-    - Include all important information
-    - Make it helpful and clear
-    """
+        FORMAT: CONVERSATIONAL RESPONSE
+        - Provide appropriate detail based on the data available
+        - Reference context naturally
+        - Include all important information
+        - Make it helpful and clear
+        """
 
     def _summarize_data_for_format_analysis(self, data: Any) -> str:
         """Create a summary of available data for format analysis."""
@@ -522,9 +1110,6 @@ class BankingAIAgent:
         
         return f"Data type: {type(data).__name__}"
 
-
-
-
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
         """Generate contextual LLM responses that reference previous conversation naturally with smart formatting."""
 
@@ -534,49 +1119,55 @@ class BankingAIAgent:
         # Enhanced system prompt for contextual, conversational responses with smart formatting
         system_prompt = f"""You are Sage, a conversational banking assistant having an ongoing conversation with {first_name}. You have perfect memory of your conversation and always reference previous context naturally.
 
-    RESPONSE FORMAT RULES (CRITICAL):
-    {response_format_instruction}
+            RESPONSE FORMAT RULES (CRITICAL):
+            {response_format_instruction}
 
-    CURRENT CONTEXT: {context_state}
-    USER'S MESSAGE: "{user_message}"
-    AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
+            CURRENT CONTEXT: {context_state}
+            USER'S MESSAGE: "{user_message}"
+            AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
 
-    CONVERSATION HISTORY (Your memory):
-    {conversation_history}
+            CONVERSATION HISTORY (Your memory):
+            {conversation_history}
 
-    CONTEXTUAL RESPONSE RULES (CRITICAL):
-    1. **Reference Previous Data**: If you previously showed transactions, balances, or spending - reference them specifically
-    - "Looking at those 5 transactions I showed you..."
-    - "From your June spending that we just discussed..."
-    - "Referring back to your balance of $2,341..."
+            CONTEXTUAL RESPONSE RULES (CRITICAL):
+            1. **Reference Previous Data**: If you previously showed transactions, balances, or spending - reference them specifically
+            - "Looking at those 5 transactions I showed you..."
+            - "From your June spending that we just discussed..."
+            - "Referring back to your balance of $2,341..."
 
-    2. **Build on Previous Context**: Make it feel like a continuous conversation
-    - "Now looking at that data..." 
-    - "Based on what we just saw..."
-    - "Following up on those transactions..."
+            2. **Build on Previous Context**: Make it feel like a continuous conversation
+            - "Now looking at that data..." 
+            - "Based on what we just saw..."
+            - "Following up on those transactions..."
 
-    3. **Use Specific Numbers/Details**: Reference exact amounts, dates, descriptions from previous messages
-    - Instead of: "Your spending was high"
-    - Say: "Your $550 spending on groceries that I mentioned"
+            3. **Use Specific Numbers/Details**: Reference exact amounts, dates, descriptions from previous messages
+            - Instead of: "Your spending was high"
+            - Say: "Your $550 spending on groceries that I mentioned"
 
-    4. **Natural Conversation Flow**: 
-    - If user asks follow-up questions, acknowledge the connection
-    - If showing new data, relate it to previous context when relevant
-    - Make responses feel like you remember everything
+            4. **Natural Conversation Flow**: 
+            - If user asks follow-up questions, acknowledge the connection
+            - If showing new data, relate it to previous context when relevant
+            - Make responses feel like you remember everything
 
-    5. **Contextual Greetings**: 
-    - Don't always greet the same way
-    - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
-    - For continuing conversations: "{first_name}, looking at that data..."
+            5. **Contextual Greetings**: 
+            - Don't always greet the same way
+            - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
+            - For continuing conversations: "{first_name}, looking at that data..."
 
-    PERSONALITY GUIDELINES:
-    - Be conversational like you're having an ongoing chat
-    - Show you remember previous parts of conversation
-    - Reference specific data points naturally
-    - Make each response build on the previous conversation
-    - Avoid repetitive patterns - vary your language
+            6. **Balance Query Responses**:
+            - If context mentions "balance at specific date", focus on the date and balance amount
+            - If context mentions "average balance", explain the calculation period
+            - Always include currency information for balance responses
+            - Reference the specific date or period requested
 
-    Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
+            PERSONALITY GUIDELINES:
+            - Be conversational like you're having an ongoing chat
+            - Show you remember previous parts of conversation
+            - Reference specific data points naturally
+            - Make each response build on the previous conversation
+            - Avoid repetitive patterns - vary your language
+
+            Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=system_prompt)])
@@ -585,10 +1176,6 @@ class BankingAIAgent:
             logger.error(f"Error generating contextual response: {e}")
             return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
         
-
-
-
-
     async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
         """Generate banking responses that are highly contextual and reference conversation history."""
         
@@ -597,39 +1184,39 @@ class BankingAIAgent:
         # Enhanced banking context prompt
         banking_context_prompt = f"""You are Sage in an ongoing banking conversation with {first_name}. Generate a response that feels natural and references your conversation history.
 
-    CONVERSATION HISTORY:
-    {conversation_history}
+            CONVERSATION HISTORY:
+            {conversation_history}
 
-    USER'S CURRENT REQUEST: "{user_message}"
-    INTENT: {intent}
-    QUERY RESULTS: {json.dumps(query_result) if query_result else "No data"}
+            USER'S CURRENT REQUEST: "{user_message}"
+            INTENT: {intent}
+            QUERY RESULTS: {json.dumps(query_result) if query_result else "No data"}
 
-    CONTEXTUAL BANKING RESPONSE RULES:
+            CONTEXTUAL BANKING RESPONSE RULES:
 
-    1. **Reference Previous Conversation**: 
-    - If you showed data before, refer to it: "Looking at those transactions we discussed..."
-    - Connect new data to previous: "Compared to your June spending we looked at..."
+            1. **Reference Previous Conversation**: 
+            - If you showed data before, refer to it: "Looking at those transactions we discussed..."
+            - Connect new data to previous: "Compared to your June spending we looked at..."
 
-    2. **Specific Data References**:
-    - Use exact amounts: "That $77.23 grocery transaction..."
-    - Reference dates: "From your April 5th spending..."
-    - Name specific merchants: "Your Netflix subscription of $15..."
+            2. **Specific Data References**:
+            - Use exact amounts: "That $77.23 grocery transaction..."
+            - Reference dates: "From your April 5th spending..."
+            - Name specific merchants: "Your Netflix subscription of $15..."
 
-    3. **Natural Follow-ups**:
-    - For "which one" questions: "Looking at that list, the [specific item]..."
-    - For comparisons: "Compared to what we just saw..."
-    - For conversions: "Converting that [specific amount] we mentioned..."
+            3. **Natural Follow-ups**:
+            - For "which one" questions: "Looking at that list, the [specific item]..."
+            - For comparisons: "Compared to what we just saw..."
+            - For conversions: "Converting that [specific amount] we mentioned..."
 
-    4. **Transaction Context**:
-    - When showing transactions, describe them conversationally
-    - Reference patterns: "I notice several food purchases..."
-    - Highlight interesting points: "That $350 car payment stands out..."
+            4. **Transaction Context**:
+            - When showing transactions, describe them conversationally
+            - Reference patterns: "I notice several food purchases..."
+            - Highlight interesting points: "That $350 car payment stands out..."
 
-    5. **Balance Context**:
-    - Reference spending in context of balance: "With your current balance of X, that spending represents..."
-    - Compare to previous periods discussed
+            5. **Balance Context**:
+            - Reference spending in context of balance: "With your current balance of X, that spending represents..."
+            - Compare to previous periods discussed
 
-    Generate a conversational response that shows you remember and build on your conversation with {first_name}."""
+            Generate a conversational response that shows you remember and build on your conversation with {first_name}."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=banking_context_prompt)])
@@ -642,172 +1229,76 @@ class BankingAIAgent:
         except Exception as e:
             logger.error(f"Error generating contextual banking response: {e}")
             return await self.generate_natural_response("Error in contextual response", {"error": str(e)}, user_message, first_name, conversation_history)
-        
+    
+    
 
-    async def handle_initial_greeting(self) -> str:
-        """Handle initial user greeting and ask for CNIC verification."""
+    def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
+        """Always allow queries by bypassing the context-aware filter."""
+        logger.info(f"Bypassing context-aware filter for query: '{user_message}'")
+        return False  # Always allow the query
+
+    def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
+        """Convert contextual queries into standalone queries using conversation history."""
         try:
-            greeting_prompt = """You are Sage, a friendly banking assistant. A user just greeted you (said hi, hello, etc.) to start a new banking session.
-
-Your task:
-1. Greet them warmly and introduce yourself as their banking assistant
-2. Explain that you can help with their banking needs
-3. Ask them to provide their CNIC for secure verification
-4. Mention the CNIC format (12345-1234567-1) 
-5. Keep it friendly and welcoming
-
-Generate a natural, welcoming response that guides them to the next step."""
-
-            response = await llm.ainvoke([SystemMessage(content=greeting_prompt)])
-            return response.content.strip()
-        except Exception as e:
-            logger.error(f"Error generating initial greeting: {e}")
-            return "Hello! I'm Sage, your banking assistant. I'm here to help you with all your banking needs. To get started securely, could you please provide your CNIC in the format 12345-1234567-1?"
-
-    async def handle_otp_request(self, first_name: str = "") -> str:
-        """Handle OTP request after CNIC verification."""
-        try:
-            otp_prompt = f"""You are Sage, a banking assistant. A user has just had their CNIC verified successfully and now needs to provide an OTP for additional security.
-
-Your task:
-1. Explain that for additional security, they need to provide an OTP
-2. Tell them the OTP is a number between 1-5 digits sent to your mobile phone
-3. Ask them to enter their OTP
-4. Keep it simple and secure-sounding
-
-Generate a natural, security-focused response asking for OTP."""
-
-            response = await llm.ainvoke([SystemMessage(content=otp_prompt)])
-            return response.content.strip()
-        except Exception as e:
-            logger.error(f"Error generating OTP request: {e}")
-            return f"Great! For additional security, {first_name}, please provide an OTP. You should have received an OTP (1-5 digits) on your mobile phone."
-
-    async def handle_otp_success(self, user_name: str, accounts: List[str]) -> str:
-        """Handle successful OTP verification."""
-        try:
-            first_name = user_name.split()[0]
-            context_state = "OTP verification successful, user can now select account"
-            data = {
-                "otp_verified": True,
-                "user_name": user_name,
-                "accounts": accounts,
-                "next_step": "account_selection"
-            }
+            if not conversation_history or len(conversation_history.strip()) < 10:
+                return user_message  # No context to work with
             
-            return await self.generate_natural_response(context_state, data, "otp_verified", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in OTP success: {e}")
-            return "OTP verified successfully! Now please select your account by entering the last 4 digits."
+            contextual_resolution_prompt = f"""
+            You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
 
-    async def handle_otp_failure(self, user_input: str, first_name: str = "") -> str:
-        """Handle failed OTP verification."""
-        try:
-            context_state = "OTP verification failed, need valid 1-5 digit number"
-            data = {
-                "otp_failed": True,
-                "user_input": user_input,
-                "required_format": "1-5 digits"
-            }
+            CONVERSATION HISTORY:
+            {conversation_history}
+
+            CURRENT CONTEXTUAL QUERY: "{user_message}"
+
+            Your task: If the current query is contextual (refers to previous data), create a standalone query that includes all necessary context.
+
+            EXAMPLES:
+
+            History: "Here are your last 4 transactions: 1. Hamza transfer $35, 2. Grocery Store $77.23, 3. Car Loan $350.69, 4. Withdrawal $117.19"
+            Query: "which one is most expensive" 
+            → "show me the most expensive transaction from my recent transaction history"
+
+            History: "You spent $77.23 at Grocery Store on June 29"
+            Query: "mujhey inka total kite batao in usd"
+            → "what is my total spending amount in USD"
+
+            History: "Your June spending: Food $100, Travel $200, Shopping $150"
+            Query: "food ka kitna tha"
+            → "how much did I spend on food in June"
+
+            History: "Your balance is $4023.90"
+            Query: "kya main 5000 afford kar sakta hun"
+            → "can I afford $5000 based on my current balance"
+
+            History: "Your last 4 transactions: Foodpanda $14.01, Grocery Store $53.44, Car Loan $350.69, Withdrawal $117.19"
+            Query: "mujhey inka total kite batao in usd"
+            → "what is the total amount of my recent transactions in USD"
+
+            RULES:
+            1. If the query is already standalone (contains complete context), return it unchanged
+            2. If the query references previous data ("which one", "inka total", "that transaction"), resolve it with context
+            3. Preserve the user's intent while making it standalone
+            4. Convert to English if needed for processing
+            5. Include relevant timeframes, amounts, or categories from history
+
+            RESOLVED STANDALONE QUERY:
+            """
             
-            return await self.generate_natural_response(context_state, data, user_input, first_name)
+            response = llm.invoke([SystemMessage(content=contextual_resolution_prompt)])
+            resolved_query = response.content.strip()
+            
+            # Remove any quotes or extra formatting
+            if resolved_query.startswith('"') and resolved_query.endswith('"'):
+                resolved_query = resolved_query[1:-1]
+            
+            logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
+            return resolved_query
             
         except Exception as e:
-            logger.error(f"Error in OTP failure: {e}")
-            return f"Sorry {first_name}, that OTP format isn't valid. Please enter a number between 1-5 digits."
+            logger.error(f"Error in contextual query resolution: {e}")
+            return user_message  # Return original query if resolution fails
 
-    async def handle_transfer_otp_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
-        """Handle OTP request for money transfer."""
-        try:
-            context_state = "Transfer details collected, requesting OTP for security"
-            data = {
-                "transfer_amount": amount,
-                "transfer_currency": currency,
-                "transfer_recipient": recipient,
-                "otp_required": True
-            }
-            
-            return await self.generate_natural_response(context_state, data, f"transfer {amount} {currency} to {recipient}", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in transfer OTP request: {e}")
-            return f"To complete the transfer of {amount} {currency} to {recipient}, please provide an OTP (any number between 1-5 digits) for security verification."
-
-    async def handle_transfer_otp_success(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
-        """Handle successful transfer OTP verification."""
-        try:
-            context_state = "Transfer OTP verified, ready to proceed with transfer"
-            data = {
-                "otp_verified": True,
-                "transfer_amount": amount,
-                "transfer_currency": currency,
-                "transfer_recipient": recipient,
-                "ready_to_transfer": True
-            }
-            
-            return await self.generate_natural_response(context_state, data, "transfer_otp_verified", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in transfer OTP success: {e}")
-            return f"OTP verified! I'll now proceed with transferring {amount} {currency} to {recipient}."
-
-    async def handle_transfer_confirmation_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
-        """Handle transfer confirmation request after OTP verification."""
-        try:
-            context_state = "Transfer OTP verified, now requesting user confirmation before executing transfer"
-            data = {
-                "otp_verified": True,
-                "transfer_amount": amount,
-                "transfer_currency": currency,
-                "transfer_recipient": recipient,
-                "confirmation_required": True,
-                "confirmation_options": ["yes", "no", "confirm", "cancel"]
-            }
-            
-            return await self.generate_natural_response(context_state, data, f"confirm transfer {amount} {currency} to {recipient}", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in transfer confirmation request: {e}")
-            return f"OTP verified! Do you want to confirm the transfer of {amount} {currency} to {recipient}? Please reply with 'yes' to confirm or 'no' to cancel."
-
-    async def handle_transfer_cancellation(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
-        """Handle transfer cancellation when user declines confirmation."""
-        try:
-            context_state = "User cancelled transfer during confirmation step, providing cancellation confirmation"
-            data = {
-                "transfer_cancelled": True,
-                "cancelled_amount": amount,
-                "cancelled_currency": currency,
-                "cancelled_recipient": recipient,
-                "account_secure": True,
-                "ready_for_new_requests": True
-            }
-            
-            return await self.generate_natural_response(context_state, data, f"cancel transfer {amount} {currency} to {recipient}", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in transfer cancellation: {e}")
-            return f"Transfer cancelled, {first_name}. The transfer of {amount} {currency} to {recipient} has been stopped and your account is secure. Is there anything else I can help you with?"
-
-    async def handle_transfer_confirmation_clarification(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
-        """Handle unclear confirmation response and ask for clarification."""
-        try:
-            context_state = "User provided unclear confirmation response, requesting clear yes/no answer"
-            data = {
-                "confirmation_unclear": True,
-                "transfer_amount": amount,
-                "transfer_currency": currency,
-                "transfer_recipient": recipient,
-                "clarification_needed": True,
-                "clear_options": ["yes/confirm", "no/cancel"]
-            }
-            
-            return await self.generate_natural_response(context_state, data, f"clarify transfer confirmation {amount} {currency} to {recipient}", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in transfer confirmation clarification: {e}")
-            return f"I want to make sure, {first_name}. Do you want to proceed with transferring {amount} {currency} to {recipient}? Please reply with 'yes' to confirm or 'no' to cancel."
 
     async def handle_non_banking_query(self, user_message: str, first_name: str) -> str:
         """Handle clearly non-banking related queries with polite decline."""
@@ -824,290 +1315,7 @@ Generate a natural, security-focused response asking for OTP."""
             logger.error(f"Error in non-banking response: {e}")
             return f"I'm sorry {first_name}, but I can only help with banking and financial questions. I don't have information about topics outside of banking in my database. Is there anything related to your banking needs I can help you with instead?"
 
-
-    def _get_enhanced_context_summary(self, chat_history: List) -> str:
-        """Get an enhanced summary of recent conversation for context."""
-        if not chat_history:
-            return "No previous conversation."
-        
-        # Get last 6 messages for better context (3 exchanges)
-        recent_messages = chat_history[-6:] if len(chat_history) > 6 else chat_history
-        context_lines = []
-        
-        for i, msg in enumerate(recent_messages):
-            speaker = "Human" if i % 2 == 0 else "Assistant"
-            content = msg.content
-            
-            # Keep more content for better context but limit extremely long responses
-            if len(content) > 300:
-                content = content[:300] + "..."
-            
-            context_lines.append(f"{speaker}: {content}")
-        
-        full_context = "\n".join(context_lines)
-        
-        # If context is very long, summarize it
-        if len(full_context) > 1000:
-            try:
-                summary_prompt = f"""
-    Summarize this banking conversation context in 2-3 sentences, preserving key banking data:
-
-    {full_context}
-
-    Focus on: transaction amounts, spending categories, timeframes, and any specific data shown to the user.
-    """
-                response = llm.invoke([SystemMessage(content=summary_prompt)])
-                return response.content.strip()
-            except:
-                return full_context[:1000] + "..."
-        
-        return full_context
-
-    # Update the old method to use the enhanced version
-    def _get_context_summary(self, chat_history: List) -> str:
-        """Get a summary of recent conversation for context."""
-        return self._get_enhanced_context_summary(chat_history)
-
-    async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
-        """Enhanced process query with contextual awareness and query resolution."""
-        memory = self.get_user_memory(account_number)
-
-        logger.info({
-            "action": "process_query_start",
-            "approach": "context_aware_llm_first",
-            "user_message": user_message,
-            "account_number": account_number
-        })
-
-        # Check for exit command first
-        if user_message.lower().strip() in ['exit', 'quit', 'logout', 'end']:
-            response = await self.handle_session_end(account_number, first_name)
-            return response
-
-        # Get conversation history for context
-        conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
-        
-        # Handle greetings and simple queries
-        if self._is_simple_greeting_or_general(user_message):
-            context_state = "User sent a greeting or general question, no specific banking data needed"
-            response = await self.generate_natural_response(context_state, None, user_message, first_name, conversation_history)
-            memory.chat_memory.add_user_message(user_message)
-            memory.chat_memory.add_ai_message(response)
-            return response
-        # NEW: Check for currency conversion requests
-        if self.detect_currency_conversion_intent(user_message, conversation_history):
-            logger.info(f"Currency conversion intent detected for: {user_message}")
-            return await self.handle_currency_conversion(user_message, conversation_history, first_name, memory)
-
-        # ENHANCED: Context-aware non-banking filter
-        if self.is_clearly_non_banking_query(user_message, conversation_history):
-            logger.info(f"Context-aware filter blocked non-banking query: {user_message}")
-            response = await self.handle_non_banking_query(user_message, first_name)
-            memory.chat_memory.add_user_message(user_message)
-            memory.chat_memory.add_ai_message(response)
-            return response
-
-        # NEW: Resolve contextual queries into standalone queries
-        original_message = user_message
-        resolved_query = self.resolve_contextual_query(user_message, conversation_history)
-        
-        if resolved_query != original_message:
-            logger.info(f"Using resolved query for processing: '{resolved_query}'")
-            processing_message = resolved_query
-        else:
-            processing_message = user_message
-
-        # PRIMARY PATH: LLM-FIRST APPROACH with resolved query
-        try:
-            logger.info("Attempting context-aware LLM-first approach")
-            
-            # Step 1: Extract filters using resolved query
-            filters = self.extract_filters_with_llm(processing_message)
-            logger.info(f"LLM extracted filters from resolved query: {filters.dict()}")
-            
-            # Step 2: Detect intent using resolved query
-            intent = self.detect_intent_from_filters(processing_message, filters)
-            logger.info(f"LLM detected intent: {intent}")
-            
-            # Step 3: Handle based on intent (same as before)
-            if intent == "balance_inquiry":
-                response = await self._handle_balance_inquiry(account_number, first_name, original_message, memory)
-                memory.chat_memory.add_user_message(original_message)
-                memory.chat_memory.add_ai_message(response)
-                return response
-            
-            elif intent == "transfer_money":
-                response = await self._handle_money_transfer_with_otp(account_number, original_message, first_name, memory)
-                memory.chat_memory.add_user_message(original_message)
-                memory.chat_memory.add_ai_message(response)
-                return response
-            
-            elif intent in ["transaction_history", "spending_analysis", "category_spending"]:
-                # Step 4: Generate pipeline using resolved query
-                pipeline = self.generate_pipeline_from_filters(filters, intent, account_number)
-                logger.info(f"LLM generated pipeline from resolved query: {pipeline}")
-                
-                # Step 5: Execute with original message for natural response
-                if pipeline:
-                    try:
-                        jsonschema.validate(pipeline, PIPELINE_SCHEMA)
-                        response = await self._execute_llm_pipeline(account_number, pipeline, original_message, first_name, memory, intent)
-                        memory.chat_memory.add_user_message(original_message)
-                        memory.chat_memory.add_ai_message(response)
-                        return response
-                    except jsonschema.ValidationError as e:
-                        logger.warning(f"LLM pipeline validation failed: {e}")
-                        raise Exception("Pipeline validation failed")
-                else:
-                    raise Exception("Empty pipeline generated")
-            
-            else:
-                # General or contextual query
-                context_state = "General banking assistance or contextual query with history"
-                response = await self.generate_natural_response(context_state, {"resolved_query": resolved_query}, original_message, first_name, conversation_history)
-                memory.chat_memory.add_user_message(original_message)
-                memory.chat_memory.add_ai_message(response)
-                return response
-                
-        except Exception as llm_error:
-            logger.warning(f"Context-aware LLM approach failed: {llm_error}. Falling back.")
-            
-            # FALLBACK PATH with resolved query
-            try:
-                logger.info("Using contextual fallback approach")
-                reasoning_result = await self._reason_about_query(processing_message, memory, account_number, first_name)
-                
-                # Handle with fallback methods using original message for response
-                if reasoning_result.get("action_needed") == "balance_check":
-                    response = await self._handle_balance_inquiry(account_number, first_name, original_message, memory)
-                elif reasoning_result.get("action_needed") == "transaction_history":
-                    response = await self._handle_transaction_history(original_message, account_number, first_name, reasoning_result, memory)
-                elif reasoning_result.get("action_needed") == "sophisticated_analysis":
-                    response = await self._handle_sophisticated_analysis(original_message, account_number, first_name, reasoning_result, memory)
-                else:
-                    context_state = "Fallback - providing contextual assistance"
-                    response = await self.generate_natural_response(context_state, {"resolved_query": resolved_query}, original_message, first_name, conversation_history)
-                
-                memory.chat_memory.add_user_message(original_message)
-                memory.chat_memory.add_ai_message(response)
-                return response
-                
-            except Exception as fallback_error:
-                logger.error(f"Both context-aware LLM and fallback failed: {fallback_error}")
-                context_state = "Error in contextual processing"
-                response = await self.generate_natural_response(context_state, {"error": str(fallback_error), "resolved_query": resolved_query}, original_message, first_name, conversation_history)
-                memory.chat_memory.add_user_message(original_message)
-                memory.chat_memory.add_ai_message(response)
-                return response
-
-    async def _handle_money_transfer_with_otp(self, account_number: str, user_message: str, 
-                                            first_name: str, memory: ConversationBufferMemory) -> str:
-        """Handle money transfer with OTP requirement (returns 'OTP_REQUIRED' for webhook to handle)."""
-        try:
-            # Use sophisticated transfer prompt
-            response = await llm.ainvoke([SystemMessage(content=transfer_prompt.format(user_message=user_message))])
-            transfer_details = self.extract_json_from_response(response.content)
-            
-            if not transfer_details:
-                context_state = "Transfer details could not be understood, need clarification"
-                conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                return await self.generate_natural_response(context_state, {"missing": "transfer_details"}, user_message, first_name, conversation_history)
-
-            # Check completeness
-            missing_parts = []
-            if not transfer_details.get("amount") or transfer_details.get("amount") <= 0:
-                missing_parts.append("amount")
-            if not transfer_details.get("recipient"):
-                missing_parts.append("recipient")
-            
-            if missing_parts:
-                context_state = f"Transfer request incomplete, missing: {', '.join(missing_parts)}"
-                data = {
-                    "missing_info": missing_parts,
-                    "provided_amount": transfer_details.get("amount"),
-                    "provided_recipient": transfer_details.get("recipient"),
-                    "currency": transfer_details.get("currency", "PKR")
-                }
-                conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
-            
-            # If transfer details are complete, return special signal for OTP
-            # The webhook will handle the OTP flow
-            return f"OTP_REQUIRED|{transfer_details['amount']}|{transfer_details.get('currency', 'PKR')}|{transfer_details['recipient']}"
-                
-        except Exception as e:
-            logger.error(f"Error in money transfer with OTP: {e}")
-            context_state = "Error occurred during money transfer processing"
-            conversation_history = self._get_context_summary(memory.chat_memory.messages)
-            return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
-
-    async def execute_verified_transfer(self, account_number: str, amount: float, currency: str, recipient: str, first_name: str, memory: ConversationBufferMemory) -> str:
-        """Execute the transfer after OTP verification."""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.backend_url}/transfer_money",
-                    json={
-                        "from_account": account_number,
-                        "to_recipient": recipient,
-                        "amount": amount,
-                        "currency": currency
-                    }
-                )
-                response.raise_for_status()
-                transfer_result = response.json()
-                
-                context_state = "Transfer executed successfully after OTP verification" if transfer_result.get("status") == "success" else "Transfer failed after OTP verification"
-                conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                
-                return await self.generate_natural_response(context_state, transfer_result, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
-                
-        except Exception as e:
-            logger.error(f"Error executing verified transfer: {e}")
-            context_state = "Error occurred during transfer execution"
-            conversation_history = self._get_context_summary(memory.chat_memory.messages)
-            return await self.generate_natural_response(context_state, {"error": str(e)}, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
-
-    def _is_simple_greeting_or_general(self, user_message: str) -> bool:
-        """Check if message is a simple greeting or general question."""
-        user_lower = user_message.lower().strip()
-        
-        # Simple greetings
-        greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
-        if any(user_lower.startswith(greeting) for greeting in greetings):
-            return True
-            
-        # General questions
-        general_phrases = ["what can you do", "help me", "what do you do", "how can you help"]
-        if any(phrase in user_lower for phrase in general_phrases):
-            return True
-            
-        return False
-
-    async def _execute_llm_pipeline(self, account_number: str, pipeline: List[Dict[str, Any]], 
-                                  user_message: str, first_name: str, memory: ConversationBufferMemory, 
-                                  intent: str) -> str:
-        """Execute LLM-generated pipeline and format response naturally."""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.backend_url}/execute_pipeline",
-                    json={"account_number": account_number, "pipeline": pipeline}
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                # Use contextual banking response instead
-                return await self.generate_contextual_banking_response(data, user_message, first_name, memory, intent)  
-                
-        except Exception as e:
-            logger.error(f"Error executing LLM pipeline: {e}")
-            context_state = "Error occurred while executing database query"
-            conversation_history = self._get_context_summary(memory.chat_memory.messages)
-            return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
-
-    # Keep all existing methods for fallback and session management...
-    
+    # === FALLBACK METHODS ===
     async def _reason_about_query(self, user_message: str, memory: ConversationBufferMemory, 
                             account_number: str, first_name: str) -> Dict[str, Any]:
         """Natural reasoning layer - let the LLM understand intent intelligently."""
@@ -1191,152 +1399,7 @@ Generate a natural, security-focused response asking for OTP."""
                 "analysis_type": "spending_patterns",
                 "reasoning": f"Error in LLM reasoning: {e}"
             }
-
-    def extract_filters_with_llm(self, user_message: str) -> FilterExtraction:
-        """Use LLM to extract filters from user query with enhanced date handling."""
-        try:
-            response = llm.invoke([SystemMessage(content=filter_extraction_prompt.format(
-                user_message=user_message,
-                current_date=datetime.now().strftime("%Y-%m-%d")
-            ))])
-            
-            try:
-                filters_obj = self.extract_json_from_response(response.content)
-                if filters_obj is None:
-                    raise ValueError("Could not parse filter JSON")
-                filters = FilterExtraction(**filters_obj)
-                logger.info(f"LLM extracted filters: {filters.dict()}")
-                return filters
-            
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.error({
-                    "action": "filter_extraction_parse_error",
-                    "error": str(e),
-                    "raw_response": response.content
-                })
-                return FilterExtraction()
-                
-        except Exception as e:
-            logger.error({
-                "action": "extract_filters_with_llm",
-                "error": str(e)
-            })
-            return FilterExtraction()
-
-    def generate_pipeline_from_filters(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
-        """Generate MongoDB pipeline from extracted filters using LLM."""
-        try:
-            response = llm.invoke([
-                SystemMessage(content=pipeline_generation_prompt.format(
-                    filters=json.dumps(filters.dict()),
-                    intent=intent,
-                    account_number=account_number
-                ))
-            ])
-            
-            cleaned_response = self.extract_json_from_response(response.content)
         
-            if not cleaned_response:
-                return self._generate_fallback_pipeline(filters, intent, account_number)
-            
-            pipeline = cleaned_response
-            jsonschema.validate(pipeline, PIPELINE_SCHEMA)
-            return pipeline
-            
-        except Exception as e:
-            logger.error({
-                "action": "generate_pipeline_from_filters",
-                "error": str(e)
-            })
-            return self._generate_fallback_pipeline(filters, intent, account_number)
-
-    def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
-        """Detect intent using LLM for more flexible understanding."""
-        
-        # Handle contextual queries about previous results
-        user_message_lower = user_message.lower()
-        contextual_keywords = ["these", "which one", "most expensive", "highest", "largest", "biggest", "cheapest", "smallest"]
-        
-        if any(keyword in user_message_lower for keyword in contextual_keywords):
-            if any(word in user_message_lower for word in ["expensive", "highest", "largest", "biggest"]):
-                return "transaction_history"  # Will be handled as a specific query
-        
-        try:
-            response = llm.invoke([
-                SystemMessage(content=intent_prompt.format(
-                    user_message=user_message,
-                    filters=json.dumps(filters.dict())
-                ))
-            ])
-            
-            detected_intent = response.content.strip().lower()
-            
-            valid_intents = [
-                "balance_inquiry",
-                "transaction_history", 
-                "spending_analysis",
-                "category_spending",
-                "transfer_money",
-                "general"
-            ]
-            
-            if detected_intent in valid_intents:
-                return detected_intent
-            else:
-                for intent in valid_intents:
-                    if intent in detected_intent:
-                        return intent
-                return "general"
-                
-        except Exception as e:
-            logger.error({
-                "action": "llm_intent_classification",
-                "error": str(e),
-                "user_message": user_message
-            })
-            return self._rule_based_intent_fallback(user_message, filters)
-
-    def _rule_based_intent_fallback(self, user_message: str, filters: FilterExtraction) -> str:
-        """Enhanced rule-based intent detection."""
-        user_message_lower = user_message.lower()
-        
-        # Enhanced keywords for better detection
-        balance_keywords = ["balance", "money", "amount", "funds", "account", "cash", "afford", "target", "save", "purchase", "buy", "enough", "capacity"]
-        transaction_keywords = ["transaction", "history", "recent", "last", "show", "list", "activities"]
-        spending_keywords = ["spend", "spent", "spending", "expenditure", "expense", "expenses", 
-                            "cost", "costs", "paid", "pay", "payment", "purchase", "purchased", 
-                            "buying", "bought", "money went", "charged", "compare", "more than", 
-                            "less than", "patterns", "habits", "analysis", "right now"]
-        transfer_keywords = ["transfer", "send", "wire", "remit", "move money", "i want to transfer", 
-                            "transfer money", "send money", "pay"]
-        planning_keywords = ["planning", "target", "goal", "save", "afford", "can i", "what can i do"]
-        
-        # Check for transfer intent first (highest priority for explicit transfer requests)
-        if any(keyword in user_message_lower for keyword in transfer_keywords):
-            return "transfer_money"
-        
-        # Financial planning and affordability questions
-        if any(keyword in user_message_lower for keyword in planning_keywords):
-            return "balance_inquiry"
-        
-        # Spending comparisons and analysis
-        if any(keyword in user_message_lower for keyword in ["more than", "less than", "compared to", "compare", "vs", "versus"]):
-            return "spending_analysis"
-            
-        # Traditional keyword matching
-        if any(keyword in user_message_lower for keyword in balance_keywords):
-            return "balance_inquiry"
-        elif any(keyword in user_message_lower for keyword in transaction_keywords) or filters.limit:
-            return "transaction_history"
-        elif any(keyword in user_message_lower for keyword in spending_keywords):
-            if filters.category:
-                return "category_spending"
-            else:
-                return "spending_analysis"
-        else:
-            return "general"
-        
-
     def _generate_fallback_pipeline(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
         """Generate a basic pipeline when LLM fails."""
         match_stage = {"$match": {"account_number": account_number}}
@@ -1377,29 +1440,6 @@ Generate a natural, security-focused response asking for OTP."""
         
         return [match_stage, {"$sort": {"date": -1, "_id": -1}}, {"$limit": 10}]
 
-
-    def extract_json_from_response(self, raw: str) -> Optional[Any]:
-        """Extract the first JSON value from an LLM reply."""
-        try:
-            start, end = _find_json_span(raw)
-            candidate = raw[start:end]
-        except ValueError as e:
-            logger.error({"action": "extract_json_span_fail", "error": str(e)})
-            return None
-
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
-
-        candidate = _json_fix(candidate)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as e:
-            logger.error({"action": "extract_json_parse_fail", "error": str(e), "candidate": candidate[:200]})
-            return None
-
-    
     async def _handle_transaction_history(self, user_message: str, account_number: str, 
                                          first_name: str, reasoning: Dict[str, Any], 
                                          memory: ConversationBufferMemory) -> str:
@@ -1688,7 +1728,6 @@ Generate a natural, security-focused response asking for OTP."""
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
             return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
 
-    # Keep all other existing methods...
     async def _handle_balance_inquiry(self, account_number: str, first_name: str, user_message: str, memory: ConversationBufferMemory) -> str:
         """Enhanced balance inquiry with natural responses."""
         try:
@@ -1735,187 +1774,6 @@ Generate a natural, security-focused response asking for OTP."""
             context_state = "Error occurred while retrieving balance information"
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
             return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
-
-    # Add all other session management and utility methods...
-    async def handle_session_start(self, first_name: str = "", last_name: str = "") -> str:
-        """Handle session start with natural greeting."""
-        try:
-            context_state = "New user starting banking session, need CNIC verification to begin"
-            data = {
-                "session_status": "starting",
-                "authentication_required": "cnic_verification",
-                "security_level": "high",
-                "next_step": "cnic_input"
-            }
-            
-            return await self.generate_natural_response(context_state, data, "", first_name or "there")
-            
-        except Exception as e:
-            logger.error(f"Error in session start: {e}")
-            context_state = "Error occurred during session initialization"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, "", first_name or "there")
-
-    async def handle_session_end(self, account_number: str, first_name: str) -> str:
-        """Handle session termination with natural response."""
-        try:
-            # Clear user memory for security
-            if account_number in self.user_memories:
-                del self.user_memories[account_number]
-            
-            context_state = "User ending banking session, providing secure farewell and cleanup confirmation"
-            data = {
-                "session_ended": True,
-                "security_cleared": True,
-                "memory_cleared": True,
-                "restart_instructions": True
-            }
-            
-            return await self.generate_natural_response(context_state, data, "exit", first_name)
-            
-        except Exception as e:
-            logger.error(f"Error ending session: {e}")
-            context_state = "Error occurred while ending session securely"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, "exit", first_name)
-
-    async def handle_cnic_verification_success(self, user_name: str, accounts: List[str], cnic: str) -> str:
-        """Handle successful CNIC verification with natural response."""
-        try:
-            context_state = "CNIC verification successful, now requesting OTP for additional security"
-            data = {
-                "verification_status": "success",
-                "user_name": user_name,
-                "accounts_found": len(accounts),
-                "accounts": accounts,
-                "next_step": "otp_verification",
-                "otp_format": "1-5 digits"
-            }
-            
-            return await self.generate_natural_response(context_state, data, cnic, user_name.split()[0])
-            
-        except Exception as e:
-            logger.error(f"Error in CNIC verification success: {e}")
-            context_state = "Error occurred after successful CNIC verification"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, cnic, user_name.split()[0])
-
-    async def handle_cnic_verification_failure(self, cnic: str, first_name: str = "") -> str:
-        """Handle failed CNIC verification with natural response."""
-        try:
-            context_state = "CNIC verification failed, user needs to try again with correct format"
-            data = {
-                "verification_status": "failed",
-                "provided_cnic": cnic,
-                "required_format": "12345-1234567-1",
-                "retry_needed": True
-            }
-            
-            return await self.generate_natural_response(context_state, data, cnic, first_name or "there")
-            
-        except Exception as e:
-            logger.error(f"Error in CNIC verification failure: {e}")
-            context_state = "Error occurred during CNIC verification failure handling"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, cnic, first_name or "there")
-
-    async def handle_invalid_cnic_format(self, user_input: str, first_name: str = "") -> str:
-        """Handle invalid CNIC format with natural response."""
-        try:
-            context_state = "User provided invalid CNIC format, need guidance on correct format"
-            data = {
-                "input_provided": user_input,
-                "format_error": True,
-                "required_format": "12345-1234567-1",
-                "format_rules": {
-                    "part1": "5 digits",
-                    "separator1": "dash (-)",
-                    "part2": "7 digits", 
-                    "separator2": "dash (-)",
-                    "part3": "1 digit"
-                }
-            }
-            
-            return await self.generate_natural_response(context_state, data, user_input, first_name or "there")
-            
-        except Exception as e:
-            logger.error(f"Error in invalid CNIC format handling: {e}")
-            context_state = "Error occurred while handling invalid CNIC format"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, user_input, first_name or "there")
-
-    async def handle_account_selection(self, selection: str, accounts: List[str], first_name: str) -> str:
-        """Handle account selection with natural response."""
-        try:
-            context_state = "User provided account selection input, providing guidance"
-            data = {
-                "available_accounts": accounts,
-                "user_input": selection,
-                "expected_format": "last_4_digits",
-                "selection_method": "last_4_digits"
-            }
-            
-            return await self.generate_natural_response(context_state, data, selection, first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in account selection: {e}")
-            context_state = "Error occurred during account selection"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, selection, first_name)
-
-    async def handle_account_confirmation(self, account_number: str, user_name: str) -> str:
-        """Handle account selection confirmation with natural response."""
-        try:
-            first_name = user_name.split()[0]
-            context_state = "Account successfully selected and confirmed, user ready for full banking operations"
-            data = {
-                "account_confirmed": True,
-                "account_number": account_number,
-                "masked_account": f"***-***-{account_number[-4:]}",
-                "user_name": user_name,
-                "ready_for_banking": True,
-                "available_services": [
-                    "balance_inquiry",
-                    "spending_analysis", 
-                    "transaction_history",
-                    "money_transfer",
-                    "financial_planning"
-                ]
-            }
-            
-            return await self.generate_natural_response(context_state, data, account_number, first_name)
-            
-        except Exception as e:
-            logger.error(f"Error in account confirmation: {e}")
-            context_state = "Error occurred during account confirmation"
-            return await self.generate_natural_response(context_state, {"error": str(e)}, account_number, user_name.split()[0])
-
-    async def handle_error_gracefully(self, error: Exception, user_message: str, first_name: str, context: str = "general") -> str:
-        """Handle any error gracefully with natural response."""
-        logger.error(f"Error in {context}: {str(error)}")
-        
-        context_state = f"Technical error occurred during {context}, providing helpful alternative"
-        data = {
-            "error_type": context,
-            "user_can_retry": True,
-            "alternative_suggestions": True
-        }
-        
-        return await self.generate_natural_response(context_state, data, user_message, first_name)
-
-    def clear_user_memory(self, account_number: str) -> None:
-        """Clear conversation memory for a specific user account."""
-        if account_number in self.user_memories:
-            del self.user_memories[account_number]
-            logger.info(f"Cleared memory for account: {account_number}")
-
-    def get_conversation_summary(self, account_number: str) -> str:
-        """Get a summary of the current conversation."""
-        memory = self.get_user_memory(account_number)
-        return self._get_context_summary(memory.chat_memory.messages)
-
-    def __del__(self):
-        """Cleanup resources when agent is destroyed."""
-        try:
-            if hasattr(self, 'client'):
-                self.client.close()
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
-
 
 class BankingSession:
     """Session manager for banking interactions."""
