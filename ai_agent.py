@@ -139,6 +139,8 @@ class BankingAIAgent:
         self.backend_url = "http://localhost:8000"
         # Use LangChain memory directly without ConversationChain
         self.user_memories: Dict[str, ConversationBufferMemory] = {}
+        self.llm = llm  # Make the global llm accessible as instance attribute
+
         
     def get_user_memory(self, account_number: str) -> ConversationBufferMemory:
         """Get or create conversation memory for a user account."""
