@@ -408,3 +408,74 @@ account_selection_prompt = PromptTemplate(
     Return ONLY the exact account number (e.g., "1234567890") or "NO_MATCH" if no clear selection can be made.
     """
 )
+
+
+currency_conversion_intent_prompt = PromptTemplate(
+    input_variables=["user_message", "conversation_history"],
+    template="""
+    You are analyzing if a user wants to convert currency amounts from their banking conversation.
+
+    Conversation History (last few messages):
+    {conversation_history}
+
+    Current User Message: "{user_message}"
+
+    Currency conversion indicators:
+    - "convert this to [currency]"
+    - "what is this in USD/GBP/EUR"  
+    - "show me in dollars/pounds/euros"
+    - "convert to [currency]"
+    - "in GBP please"
+    - "what's that in USD"
+
+    Return "YES" if user wants currency conversion, "NO" otherwise.
+    """
+)
+
+currency_extraction_prompt = PromptTemplate(
+    input_variables=["user_message", "conversation_history"],
+    template="""
+    Extract currency conversion details from the conversation.
+
+    Conversation History:
+    {conversation_history}
+
+    User Message: "{user_message}"
+
+    Find:
+    1. The amount to convert (look in recent conversation history)
+    2. Source currency (currency of the amount mentioned previously)
+    3. Target currency (what user wants to convert to)
+
+    Return JSON:
+    {{
+        "amount": number (the amount to convert from conversation),
+        "from_currency": "string (PKR/USD/EUR/GBP etc.)",
+        "to_currency": "string (target currency user wants)",
+        "context": "brief description of what amount is being converted"
+    }}
+
+    Examples:
+    History: "Your balance is 50,000 PKR"
+    Query: "convert this to USD" 
+    → {{"amount": 50000, "from_currency": "PKR", "to_currency": "USD", "context": "account balance"}}
+
+    History: "You spent $125.50 on groceries"  
+    Query: "what's that in GBP"
+    → {{"amount": 125.50, "from_currency": "USD", "to_currency": "GBP", "context": "grocery spending"}}
+
+    History: "Your balance is 150,000 KES"
+    Query: "convert to USD"
+    → {{"amount": 150000, "from_currency": "KES", "to_currency": "USD", "context": "account balance"}}
+    
+    History: "You sent 500,000 UGX to John"
+    Query: "what's that in KES"
+    → {{"amount": 500000, "from_currency": "UGX", "to_currency": "KES", "context": "money transfer"}}
+    
+    History: "Transaction of 1,200 ETB for groceries"
+    Query: "show me in dollars"
+    → {{"amount": 1200, "from_currency": "ETB", "to_currency": "USD", "context": "grocery spending"}}
+
+    Return only valid JSON.
+    """
+)

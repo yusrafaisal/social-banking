@@ -147,6 +147,106 @@ class BankingAIAgent:
                 return_messages=True
             )
         return self.user_memories[account_number]
+    def detect_currency_conversion_intent(self, user_message: str, conversation_history: str) -> bool:
+        """Detect if user wants to convert currency amounts."""
+        try:
+            from prompts import currency_conversion_intent_prompt
+            
+            response = llm.invoke([SystemMessage(content=currency_conversion_intent_prompt.format(
+                user_message=user_message,
+                conversation_history=conversation_history
+            ))])
+            
+            result = response.content.strip().upper()
+            logger.info(f"Currency conversion intent detection: {result} for message: '{user_message}'")
+            
+            return result == "YES"
+            
+        except Exception as e:
+            logger.error(f"Error detecting currency conversion intent: {e}")
+            return False
+
+    async def handle_currency_conversion(self, user_message: str, conversation_history: str, first_name: str, memory: ConversationBufferMemory) -> str:
+        """Handle currency conversion requests."""
+        try:
+            from prompts import currency_extraction_prompt
+            from currency_service import currency_converter
+            
+            # Extract conversion details using LLM
+            response = await llm.ainvoke([SystemMessage(content=currency_extraction_prompt.format(
+                user_message=user_message,
+                conversation_history=conversation_history
+            ))])
+            
+            conversion_details = self.extract_json_from_response(response.content)
+            
+            if not conversion_details:
+                context_state = "Could not understand currency conversion request, asking for clarification"
+                return await self.generate_natural_response(
+                    context_state, 
+                    {"error": "conversion_details_unclear"}, 
+                    user_message, 
+                    first_name, 
+                    conversation_history
+                )
+            
+            # Validate required fields
+            amount = conversion_details.get("amount")
+            from_currency = conversion_details.get("from_currency")
+            to_currency = conversion_details.get("to_currency")
+            context = conversion_details.get("context", "amount")
+            
+            if not all([amount, from_currency, to_currency]):
+                context_state = "Currency conversion request missing required information"
+                data = {
+                    "missing_fields": [k for k in ["amount", "from_currency", "to_currency"] 
+                                    if not conversion_details.get(k)],
+                    "provided_details": conversion_details
+                }
+                return await self.generate_natural_response(
+                    context_state, data, user_message, first_name, conversation_history
+                )
+            
+            # Perform currency conversion
+            conversion_result = await currency_converter.convert_currency(amount, from_currency, to_currency)
+            
+            if conversion_result and conversion_result.get("conversion_successful"):
+                context_state = f"Successfully converted {context} from {from_currency} to {to_currency}"
+                data = {
+                    "conversion_result": conversion_result,
+                    "context": context,
+                    "user_requested": True
+                }
+                
+                response_text = await self.generate_natural_response(
+                    context_state, data, user_message, first_name, conversation_history
+                )
+                
+                # Add to memory
+                memory.chat_memory.add_user_message(user_message)
+                memory.chat_memory.add_ai_message(response_text)
+                
+                return response_text
+            else:
+                context_state = "Currency conversion failed, providing error response"
+                data = {
+                    "conversion_failed": True,
+                    "from_currency": from_currency,
+                    "to_currency": to_currency,
+                    "amount": amount
+                }
+                return await self.generate_natural_response(
+                    context_state, data, user_message, first_name, conversation_history
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in currency conversion: {e}")
+            context_state = "Error occurred during currency conversion"
+            return await self.generate_natural_response(
+                context_state, {"error": str(e)}, user_message, first_name, conversation_history
+            )
+        
+
 
     def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
         """Check if user query is clearly non-banking using context-aware LLM filtering."""
@@ -591,6 +691,10 @@ Generate a natural, security-focused response asking for OTP."""
             memory.chat_memory.add_user_message(user_message)
             memory.chat_memory.add_ai_message(response)
             return response
+        # NEW: Check for currency conversion requests
+        if self.detect_currency_conversion_intent(user_message, conversation_history):
+            logger.info(f"Currency conversion intent detected for: {user_message}")
+            return await self.handle_currency_conversion(user_message, conversation_history, first_name, memory)
 
         # ENHANCED: Context-aware non-banking filter
         if self.is_clearly_non_banking_query(user_message, conversation_history):
