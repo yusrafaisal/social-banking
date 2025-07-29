@@ -451,10 +451,8 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
         return await ai_agent.handle_session_start()
     
 
-
-
 async def handle_cnic_verification(sender_id: str, user_message: str) -> str:
-    """Handle CNIC verification with flexible input format."""
+    """Handle CNIC verification with flexible input format and non-banking query protection."""
     
     user_message_clean = user_message.strip()
     
@@ -467,6 +465,15 @@ async def handle_cnic_verification(sender_id: str, user_message: str) -> str:
         })
         
         return await ai_agent.handle_initial_greeting()
+    
+    # CRITICAL: Check for non-banking queries BEFORE CNIC processing
+    if ai_agent.is_clearly_non_banking_query(user_message_clean, ""):
+        logger.info({
+            "action": "non_banking_query_blocked_during_cnic_verification",
+            "sender_id": sender_id,
+            "blocked_query": user_message_clean
+        })
+        return await ai_agent.handle_non_banking_query(user_message_clean, "")
     
     # Try to extract CNIC from natural language
     extracted_cnic = extract_cnic_from_text(user_message_clean)
@@ -534,6 +541,15 @@ async def handle_otp_verification(sender_id: str, user_message: str) -> str:
     user_data = authenticated_users[sender_id]
     first_name = user_data.get(DatabaseFields.NAME, "").split()[0]
     
+    # CRITICAL: Check for non-banking queries BEFORE OTP processing
+    if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):
+        logger.info({
+            "action": "non_banking_query_blocked_during_otp_verification",
+            "sender_id": sender_id,
+            "blocked_query": user_message.strip()
+        })
+        return await ai_agent.handle_non_banking_query(user_message.strip(), first_name)
+    
     if is_valid_otp(user_message.strip()):
         # Get detailed account information for smart selection
         accounts = user_data.get("accounts", [])
@@ -582,6 +598,7 @@ async def handle_account_selection(sender_id: str, user_message: str) -> str:
     logger.info(f"Account selection debug - User input: '{user_message}'")
     logger.info(f"Available accounts: {[acc[DatabaseFields.ACCOUNT_NUMBER] for acc in account_details]}")
     
+
     # If no account details stored, fetch them
     if not account_details:
         account_details = await get_account_details_from_backend(accounts)
@@ -744,6 +761,7 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
         first_name = user_name.split()[0] if user_name else "there"
         account_number = user_data.get("selected_account", "")
         cnic = user_data.get(DatabaseFields.CNIC, "")
+
         
         if not account_number:
             logger.error({
@@ -822,6 +840,16 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
         first_name = user_name.split()[0] if user_name else "there"
         account_number = user_data.get("selected_account", "")
         cnic = user_data.get(DatabaseFields.CNIC, "")
+        
+        user_message_lower = user_message.lower().strip()
+        if not any(word in user_message_lower for word in ["yes", "no", "confirm", "cancel", "ok", "sure", "proceed"]):
+            if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):
+                logger.info({
+                    "action": "non_banking_query_blocked_during_transfer_confirmation",
+                    "sender_id": sender_id,
+                    "blocked_query": user_message.strip()
+                })
+                return await ai_agent.handle_non_banking_query(user_message.strip(), first_name)
         
         transfer_info = get_pending_transfer_info(sender_id)
         
