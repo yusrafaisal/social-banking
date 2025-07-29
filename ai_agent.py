@@ -833,7 +833,43 @@ class BankingAIAgent:
         """Handle money transfer with OTP requirement (returns 'OTP_REQUIRED' for webhook to handle)."""
         try:
             # Use sophisticated transfer prompt
-            response = await llm.ainvoke([SystemMessage(content=transfer_prompt.format(user_message=user_message))])
+            # Get conversation history for contextual transfers
+            conversation_history = self._get_context_summary(memory.chat_memory.messages)
+
+            # Enhanced transfer prompt with context
+            enhanced_transfer_prompt = f"""
+            Extract transfer details from the query, using conversation history for context:
+
+            CONVERSATION HISTORY:
+            {conversation_history}
+
+            CURRENT TRANSFER REQUEST: "{user_message}"
+
+            Rules:
+            - If message mentions percentages of "that" or "it", calculate based on amounts in conversation history
+            - Extract exact amount, currency, and recipient
+            - For "1% of that $53.14" → amount should be 0.53, currency USD
+            - For "transfer 10% of that PKR amount" → calculate 10% of the PKR amount mentioned
+
+            Return JSON: {{"amount": number, "currency": string, "recipient": string}}
+
+            Examples:
+            History: "You spent $53.14 that week"
+            Query: "transfer 1% of that to Ahmed" → {{"amount": 0.53, "currency": "USD", "recipient": "Ahmed"}}
+
+            History: "You spent 5000 PKR on food" 
+            Query: "send 5% of that to John" → {{"amount": 250, "currency": "PKR", "recipient": "John"}}
+            """
+
+            logger.info(f"🔍 TRANSFER DEBUG - Using enhanced prompt for: {user_message}")
+
+            response = await llm.ainvoke([SystemMessage(content=enhanced_transfer_prompt)])
+
+            logger.info(f"🔍 TRANSFER DEBUG - LLM response: {response.content}") 
+
+
+
+
             transfer_details = self.extract_json_from_response(response.content)
             
             if not transfer_details:

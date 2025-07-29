@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 VERIFY_TOKEN = "helloworld3"
-PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
+PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPGiZCdRaVk6KrTAiQYclW4ZCZC9e8FiC4EqdOU0zN2gLDaVC1UtXeDXYT7VtnKPyr5NV3TZAgChtsMiDhzgZBsqk6eHZA8IKUQjqlORPXIatiTbs9OekNOeFxL16xOpEM2gJKMgJLR7yo70dPCHWBTyILXZAiBLEzQt9KfZBdOYCIEGyOVDdzMDM9aey"
 
 BACKEND_URL = "http://localhost:8000"
 
@@ -356,7 +356,7 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
     
     user_last_message_time[sender_id] = current_time
 
-    # Check for exit command first
+        # Check for exit command first# Check for exit command first
     if user_message.strip().lower() == "exit":
         logger.info({
             "action": "exit_command_detected",
@@ -367,6 +367,18 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
         first_name = user_info.get("name", "").split()[0] if user_info.get("name") else ""
         account_number = user_info.get("account_number", "")
         
+        # FORCE CLEAR ALL MEMORY FOR THIS USER
+        logger.info(f"🧠 DEBUG: account_number = '{account_number}'")
+        
+        if account_number:
+            ai_agent.clear_user_memory(account_number)
+            logger.info(f"✅ Force cleared memory for account: {account_number}")
+        else:
+            # Clear memory for all possible accounts if account_number is empty
+            logger.info("⚠️ No account_number found, clearing all user memories")
+            ai_agent.user_memories.clear()  # Nuclear option - clear everything
+            logger.info("✅ Cleared all AI agent memories")
+        
         clear_user_state(sender_id)
         
         logger.info({
@@ -375,6 +387,11 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
         })
         
         return await ai_agent.handle_session_end(account_number, first_name)
+    
+
+
+
+
 
     # Get current verification stage
     verification_stage = get_user_verification_stage(sender_id)
