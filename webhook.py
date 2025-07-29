@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 import httpx
 from prompts import account_selection_prompt
 from langchain_core.messages import SystemMessage
+import aiohttp
+from openai import OpenAI
 
 from ai_agent import llm
 
@@ -40,12 +42,17 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
-PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPGiZCdRaVk6KrTAiQYclW4ZCZC9e8FiC4EqdOU0zN2gLDaVC1UtXeDXYT7VtnKPyr5NV3TZAgChtsMiDhzgZBsqk6eHZA8IKUQjqlORPXIatiTbs9OekNOeFxL16xOpEM2gJKMgJLR7yo70dPCHWBTyILXZAiBLEzQt9KfZBdOYCIEGyOVDdzMDM9aey"
 
+PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
+
+# Add this after your other global variables (around line 40-50, after BACKEND_URL)
 BACKEND_URL = WebhookConfig.BACKEND_URL
 
 # Initialize AI Agent for natural responses
 ai_agent = BankingAIAgent()
+
+# Add voice message deduplication cache
+voice_message_last_time = {}
 
 @app.get("/webhook")
 async def webhook(request: Request):
@@ -59,6 +66,10 @@ async def webhook(request: Request):
     else:
         raise HTTPException(status_code=403, detail="Invalid verification token.")
 
+# Add to webhook.py constants
+VOICE_MESSAGE_COOLDOWN = 15  # seconds
+
+# In receive_message function
 @app.post("/webhook")
 async def receive_message(request: Request):
     try:
@@ -71,36 +82,140 @@ async def receive_message(request: Request):
 
     for entry in data.get("entry", []):
         for messaging_event in entry.get("messaging", []):
-            message_id = messaging_event.get("message", {}).get("mid")
             sender_id = messaging_event["sender"]["id"]
 
-            if message_id and message_id in processed_messages:
-                continue
-
             if "message" in messaging_event:
-                if message_id:
-                    processed_messages.add(message_id)
-                
-                user_message = messaging_event["message"].get("text", "")
-                
-                if user_message.strip():
-                    # Handle translation and process message
+                # Handle text messages
+                if "text" in messaging_event["message"]:
+                    user_message = messaging_event["message"]["text"]
                     response_text = await process_multilingual_message(sender_id, user_message)
                     send_message(sender_id, response_text)
 
-    if len(processed_messages) % 100 == 0:
-        periodic_cleanup()
+                # Handle voice messages with rate limiting
+                elif "attachments" in messaging_event["message"]:
+                    for attachment in messaging_event["message"]["attachments"]:
+                        if attachment["type"] == "audio":
+                            # Check voice message rate limit
+                            current_time = time.time()
+                            
+                            if sender_id in voice_message_last_time:
+                                if current_time - voice_message_last_time[sender_id] < VOICE_MESSAGE_COOLDOWN:
+                                    logger.info(f"🎤 Voice message rate limited for {sender_id}")
+                                    send_message(sender_id, "Please wait a moment before sending another voice message. 🎤")
+                                    continue
+                            
+                            # Update voice message timestamp
+                            voice_message_last_time[sender_id] = current_time
+                            
+                            audio_url = attachment["payload"]["url"]
+                            response_text = await handle_voice_message(sender_id, audio_url)
+                            send_message(sender_id, response_text)
 
     return JSONResponse(content={"status": "ok"})
 
+voice_message_cache = {}
+
+async def handle_voice_message(sender_id: str, audio_url: str) -> str:
+    """Handle voice messages with deduplication."""
+    try:
+        current_time = time.time()
+        
+        # Check for recent voice message processing
+        cache_key = f"{sender_id}:voice"
+        if cache_key in voice_message_cache:
+            last_time, last_response = voice_message_cache[cache_key]
+            if current_time - last_time < 10:  # 10 second cooldown
+                logger.info(f"🎤 Voice message too soon, returning cached response for {sender_id}")
+                return "I'm still processing your previous voice message. Please wait a moment."
+        
+        # Download audio
+        async with aiohttp.ClientSession() as session:
+            async with session.get(audio_url) as response:
+                if response.status != 200:
+                    raise Exception("Failed to download audio file")
+                audio_data = await response.read()
+
+        # Create unique filename to avoid conflicts
+        audio_file_path = f"temp_audio_{sender_id}_{int(current_time)}.mp3"
+        
+        try:
+            with open(audio_file_path, "wb") as audio_file:
+                audio_file.write(audio_data)
+
+            # Transcribe
+            transcription = await transcribe_audio(audio_file_path)
+            
+            # Check for duplicate transcription
+            transcription_hash = hash(transcription.strip().lower())
+            recent_key = f"{sender_id}:transcription:{transcription_hash}"
+            
+            if recent_key in voice_message_cache:
+                last_time, last_response = voice_message_cache[recent_key]
+                if current_time - last_time < 30:  # 30 seconds for same transcription
+                    logger.info(f"🎤 Duplicate transcription detected: '{transcription[:50]}...'")
+                    return last_response
+
+            # Process normally
+            detected_language = translation_service.detect_language_smart(
+                transcription, sender_id, get_user_last_language
+            )
+            
+            if detected_language != "en":
+                transcription = translation_service.translate_to_english(transcription, detected_language)
+
+            response_text = await process_multilingual_message(sender_id, transcription)
+            
+            # Cache the result
+            voice_message_cache[cache_key] = (current_time, response_text)
+            voice_message_cache[recent_key] = (current_time, response_text)
+            
+            return response_text
+
+        finally:
+            # Safe cleanup
+            try:
+                if os.path.exists(audio_file_path):
+                    os.remove(audio_file_path)
+                    logger.info(f"🗑️ Cleaned up audio file: {audio_file_path}")
+            except Exception as cleanup_error:
+                logger.error(f"Cleanup error: {cleanup_error}")
+
+    except Exception as e:
+        logger.error(f"Error handling voice message: {e}")
+        return "Sorry, I couldn't process your voice message. Please try typing your question instead."
 
 
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]) 
 
+async def transcribe_audio(audio_file_path: str) -> str:
+    """Transcribe audio using OpenAI's new SDK (>=1.0.0)"""
+    try:
+        with open(audio_file_path, "rb") as audio_file:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"  # ensures raw string instead of JSON
+            )
+        return response
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {e}")
+        raise Exception("Failed to transcribe audio")
 
 async def process_multilingual_message(sender_id: str, user_message: str) -> str:
     """Process message with language detection and translation support."""
     
     try:
+        # CRITICAL: Check for duplicate messages at translation level too
+        current_time = time.time()
+        message_hash = hash(user_message.strip().lower())
+        translation_cache_key = f"{sender_id}:translation:{message_hash}"
+        
+        if translation_cache_key in user_request_cache:
+            last_time, last_response = user_request_cache[translation_cache_key]
+            if current_time - last_time < 30:  # 30 seconds
+                logger.info(f"🌐 TRANSLATION DUPLICATE BLOCKED: '{user_message[:50]}...' (sent {current_time - last_time:.1f}s ago)")
+                return last_response
+        
         # Detect language of incoming message
         detected_language = translation_service.detect_language_smart(
             user_message, 
@@ -146,6 +261,9 @@ async def process_multilingual_message(sender_id: str, user_message: str) -> str
             })
         else:
             final_response = english_response
+        
+        # Cache the final translated response
+        user_request_cache[translation_cache_key] = (current_time, final_response)
         
         return final_response
         
@@ -319,12 +437,23 @@ def is_confirmation_negative(message: str) -> bool:
     message_lower = message.lower().strip()
     return any(word in message_lower for word in ConfirmationWords.NEGATIVE)
 
+user_request_cache = {}
 async def process_user_message(sender_id: str, user_message: str) -> str:
     """Process user message with enhanced LLM-based exit detection."""
     
     current_time = time.time()
+
+    # CRITICAL: Check for duplicate messages first
+    message_hash = hash(user_message.strip().lower())
+    cache_key = f"{sender_id}:{message_hash}"
     
-    # Rate limiting
+    if cache_key in user_request_cache:
+        last_time, last_response = user_request_cache[cache_key]
+        if current_time - last_time < 30:  # 30 seconds
+            logger.info(f"🔄 DUPLICATE MESSAGE BLOCKED: '{user_message[:50]}...' (sent {current_time - last_time:.1f}s ago)")
+            return last_response
+    
+    # Rate limiting (existing code) - FIXED: Remove duplicate rate limiting
     if sender_id in user_last_message_time:
         if current_time - user_last_message_time[sender_id] < Limits.MESSAGE_RATE_LIMIT_SECONDS:
             return "I appreciate your enthusiasm! Please give me just a moment to process your previous message before sending another. 😊"
@@ -364,7 +493,11 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
             "exit_phrase": user_message
         })
         
-        return await ai_agent.handle_session_end(account_number, first_name)
+        response = await ai_agent.handle_session_end(account_number, first_name)
+        
+        # Cache the exit response
+        user_request_cache[cache_key] = (current_time, response)
+        return response
 
     # Get current verification stage
     verification_stage = get_user_verification_stage(sender_id)
@@ -377,33 +510,52 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
         "enhanced_features": "flexible_cnic_smart_account_transfer_confirmation_llm_exit"
     })
 
-    # Handle different verification stages (rest remains the same)
-    if verification_stage == VerificationStages.NOT_VERIFIED:
-        return await handle_cnic_verification(sender_id, user_message)
-    
-    elif verification_stage == VerificationStages.CNIC_VERIFIED:
-        return await handle_otp_verification(sender_id, user_message)
-    
-    elif verification_stage == VerificationStages.OTP_VERIFIED:
-        return await handle_account_selection(sender_id, user_message)
-    
-    elif verification_stage == VerificationStages.ACCOUNT_SELECTED:
-        return await handle_banking_queries(sender_id, user_message)
-    
-    elif verification_stage == VerificationStages.TRANSFER_OTP_PENDING:
-        return await handle_transfer_otp_verification(sender_id, user_message)
-    
-    elif verification_stage == VerificationStages.TRANSFER_CONFIRMATION_PENDING:
-        return await handle_transfer_confirmation(sender_id, user_message)
-    
-    else:
-        return await ai_agent.handle_session_start()
-    
-
-
+    # Process based on verification stage and cache the response
+    try:
+        response = None
+        
+        # Handle different verification stages
+        if verification_stage == VerificationStages.NOT_VERIFIED:
+            response = await handle_cnic_verification(sender_id, user_message)
+        
+        elif verification_stage == VerificationStages.CNIC_VERIFIED:
+            response = await handle_otp_verification(sender_id, user_message)
+        
+        elif verification_stage == VerificationStages.OTP_VERIFIED:
+            response = await handle_account_selection(sender_id, user_message)
+        
+        elif verification_stage == VerificationStages.ACCOUNT_SELECTED:
+            response = await handle_banking_queries(sender_id, user_message)
+        
+        elif verification_stage == VerificationStages.TRANSFER_OTP_PENDING:
+            response = await handle_transfer_otp_verification(sender_id, user_message)
+        
+        elif verification_stage == VerificationStages.TRANSFER_CONFIRMATION_PENDING:
+            response = await handle_transfer_confirmation(sender_id, user_message)
+        
+        else:
+            response = await ai_agent.handle_session_start()
+        
+        # Cache the successful response
+        if response:
+            user_request_cache[cache_key] = (current_time, response)
+            
+            # Clean old cache entries (keep only last 100)
+            if len(user_request_cache) > 100:
+                old_keys = [k for k, (t, _) in user_request_cache.items() if current_time - t > 300]  # 5 minutes
+                for k in old_keys:
+                    user_request_cache.pop(k, None)
+                logger.info(f"🧹 Cleaned {len(old_keys)} old cache entries")
+        
+        return response
+        
+    except Exception as e:
+        # Don't cache errors
+        logger.error(f"Processing error: {e}")
+        return "Sorry, there was an error processing your request."
 
 async def handle_cnic_verification(sender_id: str, user_message: str) -> str:
-    """Handle CNIC verification with flexible input format."""
+    """Handle CNIC verification with flexible input format and non-banking query protection."""
     
     user_message_clean = user_message.strip()
     
@@ -416,6 +568,7 @@ async def handle_cnic_verification(sender_id: str, user_message: str) -> str:
         })
         
         return await ai_agent.handle_initial_greeting()
+    
     
     # Try to extract CNIC from natural language
     extracted_cnic = extract_cnic_from_text(user_message_clean)
@@ -483,6 +636,15 @@ async def handle_otp_verification(sender_id: str, user_message: str) -> str:
     user_data = authenticated_users[sender_id]
     first_name = user_data.get(DatabaseFields.NAME, "").split()[0]
     
+    # CRITICAL: Check for non-banking queries BEFORE OTP processing
+    if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):
+        logger.info({
+            "action": "non_banking_query_blocked_during_otp_verification",
+            "sender_id": sender_id,
+            "blocked_query": user_message.strip()
+        })
+        return await ai_agent.handle_non_banking_query(user_message.strip(), first_name)
+    
     if is_valid_otp(user_message.strip()):
         # Get detailed account information for smart selection
         accounts = user_data.get("accounts", [])
@@ -531,6 +693,7 @@ async def handle_account_selection(sender_id: str, user_message: str) -> str:
     logger.info(f"Account selection debug - User input: '{user_message}'")
     logger.info(f"Available accounts: {[acc[DatabaseFields.ACCOUNT_NUMBER] for acc in account_details]}")
     
+
     # If no account details stored, fetch them
     if not account_details:
         account_details = await get_account_details_from_backend(accounts)
@@ -693,6 +856,7 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
         first_name = user_name.split()[0] if user_name else "there"
         account_number = user_data.get("selected_account", "")
         cnic = user_data.get(DatabaseFields.CNIC, "")
+
         
         if not account_number:
             logger.error({
@@ -771,6 +935,16 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
         first_name = user_name.split()[0] if user_name else "there"
         account_number = user_data.get("selected_account", "")
         cnic = user_data.get(DatabaseFields.CNIC, "")
+        
+        user_message_lower = user_message.lower().strip()
+        if not any(word in user_message_lower for word in ["yes", "no", "confirm", "cancel", "ok", "sure", "proceed"]):
+            if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):
+                logger.info({
+                    "action": "non_banking_query_blocked_during_transfer_confirmation",
+                    "sender_id": sender_id,
+                    "blocked_query": user_message.strip()
+                })
+                return await ai_agent.handle_non_banking_query(user_message.strip(), first_name)
         
         transfer_info = get_pending_transfer_info(sender_id)
         
