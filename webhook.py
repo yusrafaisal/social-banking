@@ -43,7 +43,7 @@ app = FastAPI()
 
 VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
 
-PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPAP0Nhv5ZBWpiL6hboNQXrbnp1NKardW6jeCyJbXVKNR0MCooUu0H7xaINNxHLsgM6ZAddqPHTp7J17Kjl9AjqZAZB0xlyNLIIsA9q3VVtCIva0MZA3OQKKUZAZBP4qZBZBfVMr3KID33fAmI7aS4FUxDUczo6HrSW1MbOmoyIw3F2yEAITdwMTt6yYZCw"
+PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
 
 # Add this after your other global variables (around line 40-50, after BACKEND_URL)
 BACKEND_URL = WebhookConfig.BACKEND_URL
@@ -131,9 +131,8 @@ async def receive_message(request: Request):
     return JSONResponse(content={"status": "ok"})
 
 voice_message_cache = {}
-
 async def handle_voice_message(sender_id: str, audio_url: str) -> str:
-    """Handle voice messages with deduplication."""
+    """Handle voice messages with deduplication and proper language handling."""
     try:
         current_time = time.time()
         
@@ -172,21 +171,38 @@ async def handle_voice_message(sender_id: str, audio_url: str) -> str:
                     logger.info(f"🎤 Duplicate transcription detected: '{transcription[:50]}...'")
                     return last_response
 
-            # Process normally
+            # Detect language of transcription
             detected_language = translation_service.detect_language_smart(
                 transcription, sender_id, get_user_last_language
             )
             
+            logger.info(f"🎤 VOICE: Detected language '{detected_language}' for transcription: '{transcription}'")
+            
+            # Store the detected language BEFORE processing
+            set_user_language(sender_id, detected_language)
+            
+            # Translate to English for processing if needed
             if detected_language != "en":
-                transcription = translation_service.translate_to_english(transcription, detected_language)
+                english_transcription = translation_service.translate_to_english(transcription, detected_language)
+                logger.info(f"🎤 VOICE: Translated '{transcription}' to '{english_transcription}'")
+            else:
+                english_transcription = transcription
 
-            response_text = await process_multilingual_message(sender_id, transcription)
+            # Process the English transcription directly (not through multilingual processor)
+            english_response = await process_user_message(sender_id, english_transcription)
+            
+            # Translate response back to user's ORIGINAL language
+            if detected_language != "en":
+                final_response = translation_service.translate_from_english(english_response, detected_language)
+                logger.info(f"🎤 VOICE: Final response translated to {detected_language}: '{final_response[:100]}...'")
+            else:
+                final_response = english_response
             
             # Cache the result
-            voice_message_cache[cache_key] = (current_time, response_text)
-            voice_message_cache[recent_key] = (current_time, response_text)
+            voice_message_cache[cache_key] = (current_time, final_response)
+            voice_message_cache[recent_key] = (current_time, final_response)
             
-            return response_text
+            return final_response
 
         finally:
             # Safe cleanup
@@ -200,7 +216,7 @@ async def handle_voice_message(sender_id: str, audio_url: str) -> str:
     except Exception as e:
         logger.error(f"Error handling voice message: {e}")
         return "Sorry, I couldn't process your voice message. Please try typing your question instead."
-
+    
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]) 
 
@@ -222,43 +238,42 @@ async def process_multilingual_message(sender_id: str, user_message: str) -> str
     """Process message with language detection and translation support."""
     
     try:
-        # CRITICAL: Check for duplicate messages at translation level too
         current_time = time.time()
         message_hash = hash(user_message.strip().lower())
         translation_cache_key = f"{sender_id}:translation:{message_hash}"
         
         if translation_cache_key in user_request_cache:
             last_time, last_response = user_request_cache[translation_cache_key]
-            if current_time - last_time < 30:  # 30 seconds
+            if current_time - last_time < 30:
                 logger.info(f"🌐 TRANSLATION DUPLICATE BLOCKED: '{user_message[:50]}...' (sent {current_time - last_time:.1f}s ago)")
                 return last_response
         
-        # Detect language of incoming message
-        detected_language = translation_service.detect_language_smart(
+        # Detect language of incoming message - SAVE THIS FOR LATER USE
+        original_detected_language = translation_service.detect_language_smart(
             user_message, 
             sender_id, 
             get_user_last_language
         )
         
         # Store the detected language for this user
-        set_user_language(sender_id, detected_language)
+        set_user_language(sender_id, original_detected_language)
         
         logger.info({
             "action": "language_detected",
             "sender_id": sender_id,
-            "detected_language": detected_language,
+            "detected_language": original_detected_language,
             "original_message": user_message
         })
         
         # Translate to English for processing if needed
-        if detected_language != 'en':
-            english_message = translation_service.translate_to_english(user_message, detected_language)
+        if original_detected_language != 'en':
+            english_message = translation_service.translate_to_english(user_message, original_detected_language)
             logger.info({
                 "action": "message_translated_to_english",
                 "sender_id": sender_id,
                 "original": user_message,
                 "translated": english_message,
-                "source_language": detected_language
+                "source_language": original_detected_language
             })
         else:
             english_message = user_message
@@ -266,15 +281,15 @@ async def process_multilingual_message(sender_id: str, user_message: str) -> str
         # Process the English message through existing flow
         english_response = await process_user_message(sender_id, english_message)
         
-        # Translate response back to user's language if needed
-        if detected_language != 'en':
-            final_response = translation_service.translate_from_english(english_response, detected_language)
+        # Translate response back to user's ORIGINAL language (not re-detected)
+        if original_detected_language != 'en':
+            final_response = translation_service.translate_from_english(english_response, original_detected_language)
             logger.info({
                 "action": "response_translated_to_user_language",
                 "sender_id": sender_id,
                 "english_response": english_response[:100] + "...",
                 "translated_response": final_response[:100] + "...",
-                "target_language": detected_language
+                "target_language": original_detected_language
             })
         else:
             final_response = english_response
