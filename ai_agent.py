@@ -441,23 +441,23 @@ class BankingAIAgent:
             return f"Great! For additional security, {first_name}, please provide an OTP. You should have received an OTP ({Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits) on your mobile phone."
 
     async def handle_otp_success(self, user_name: str, accounts: List[str]) -> str:
-        """Handle successful OTP verification."""
+        """Handle successful OTP verification - should only ask for account selection."""
         try:
             first_name = user_name.split()[0]
-            context_state = ContextStates.OTP_VERIFICATION_SUCCESS
-            data = {
-                "otp_verified": True,
-                "user_name": user_name,
-                "accounts": accounts,
-                "next_step": "account_selection"
-            }
             
-            return await self.generate_natural_response(context_state, data, "otp_verified", first_name)
+            # Format accounts for selection
+            account_list = []
+            for i, account in enumerate(accounts, 1):
+                account_list.append(f"{i}. {account}")
+            
+            accounts_text = "\n".join(account_list)
+            
+            return f"Hello {first_name}! OTP verified successfully.\n\nPlease select your account:\n{accounts_text}\n\nYou can select by typing the account number, last 4 digits, or saying 'first account', 'second account', etc."
             
         except Exception as e:
             logger.error(f"Error in OTP success: {e}")
             return "OTP verified successfully! Now please select your account by entering the last 4 digits."
-
+        
     async def handle_otp_failure(self, user_input: str, first_name: str = "") -> str:
         """Handle failed OTP verification."""
         try:
@@ -561,29 +561,24 @@ class BankingAIAgent:
         """Handle account selection confirmation with natural response."""
         try:
             first_name = user_name.split()[0]
-            context_state = ContextStates.ACCOUNT_SELECTED
-            data = {
-                "account_confirmed": True,
-                "account_number": account_number,
-                "masked_account": f"***-***-{account_number[-4:]}",
-                "user_name": user_name,
-                "ready_for_banking": True,
-                "available_services": [
-                    BankingIntents.BALANCE_INQUIRY,
-                    BankingIntents.SPENDING_ANALYSIS, 
-                    BankingIntents.TRANSACTION_HISTORY,
-                    BankingIntents.TRANSFER_MONEY,
-                    "financial_planning"
-                ]
-            }
+            masked_account = f"***-***-{account_number[-4:]}"
             
-            return await self.generate_natural_response(context_state, data, account_number, first_name)
+            return f"""Hello {first_name}! Account confirmed! Welcome, you're now connected to account {masked_account}.
+
+    I can help you with:
+    - Check your account balance
+    - View transaction history  
+    - Analyze your spending patterns
+    - Transfer money to others
+    - Financial planning assistance
+
+    What can I help you with today?"""
             
         except Exception as e:
             logger.error(f"Error in account confirmation: {e}")
-            context_state = ContextStates.ERROR_OCCURRED
-            return await self.generate_natural_response(context_state, {"error": str(e)}, account_number, user_name.split()[0])
+            return f"Hello! Account confirmed successfully. What can I help you with today?"
         
+            
     # === QUERY PIPELINE FLOW ===
     def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
         """Detect intent using LLM for more flexible understanding."""
@@ -1294,81 +1289,80 @@ class BankingAIAgent:
         # Use LLM to determine response format for banking queries (keep existing)
         response_format_instruction = await self._determine_response_format_with_llm(user_message, data, context_state)
         
-        # ENHANCED system prompt - CHATGPT DIRECT STYLE (NO EMOJIS)
-        system_prompt = f"""You are Sage, a professional banking assistant. Generate responses in the exact ChatGPT banking style: direct, structured, and to-the-point. DO NOT use any emojis.
+        # ENHANCED system prompt - CHATGPT DIRECT STYLE (NO ASTERISKS)
+        system_prompt = f"""You are Sage, a professional banking assistant. Generate responses in the exact ChatGPT banking style: direct, structured, and to-the-point. NO asterisks (*) anywhere.
 
-            RESPONSE FORMAT RULES (CRITICAL):
-            {response_format_instruction}
+        CRITICAL RESPONSE FORMAT:
+        **FIRST LINE MUST ALWAYS BE:** "Hello [FirstName]! [brief context-appropriate greeting]"
 
-            **CHATGPT-STYLE FORMATTING RULES (MANDATORY - NO EMOJIS):**
-            
-            **TRANSACTION HISTORY (DIRECT BULLET POINT STYLE):**
-            - Header: "Here are your **last [X] transactions**:" or "Here are your **[month] transactions**:"
-            - Use bullet points (•) for each transaction
-            - Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
-            - NO narrative explanation of each transaction
-            - End with: "Let me know if you'd like a filter (e.g., only credits, only food-related) or if you want to send money, download a statement, or something else."
+        **RESPONSE FORMAT RULES (CRITICAL):**
+        {response_format_instruction}
 
-            Example Transaction Format:
-            Here are your **last 5 transactions**:
-            • 29-Jul-2025 | Transfer to Ali Raza – gift | Debit | 1,000.00 PKR | Balance: 244,600.00
-            • 28-Jul-2025 | Foodpanda - Dinner | Debit | 2,300.00 PKR | Balance: 245,600.00
-            
-            **BALANCE RESPONSES (DIRECT STYLE):**
-            - "**Account Balance:** PKR **245,600.00** **As of:** **29th July 2025**"
-            - Add helpful follow-up: "Is there anything else I can help you with?"
+        **CHATGPT-STYLE FORMATTING RULES (MANDATORY - NO ASTERISKS):**
 
-            **VERIFICATION RESPONSES (STRUCTURED):**
-            - "**Verification successful.** Thank you, your identity has been verified."
-            - "**Please answer any two of the following questions:**"
-            - Number the verification steps clearly
+        **TRANSACTION HISTORY (DIRECT BULLET POINT STYLE):**
+        - After greeting, header: "Here are your last [X] transactions:"
+        - Use bullet points (•) for each transaction
+        - Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
+        - NO narrative explanation of each transaction
+        - End with: "Let me know if you'd like a filter (e.g., only credits, only food-related) or if you want to send money, download a statement, or something else."
 
-            **TRANSFER RESPONSES (DIRECT CONFIRMATION):**
-            - "**Success!** You have successfully transferred **PKR 1,000** to **Ali Raza**."
-            - "**Reference:** *gift* **Date:** 29-Jul-2025 **Updated Balance:** PKR **244,600.00**"
-            - "Would you like to do anything else? (View transactions, check spending, send more money?)"
+        **BALANCE RESPONSES (DIRECT STYLE):**
+        - After greeting: "Account Balance: [Currency] [Amount] As of: [Date]"
+        - Add helpful follow-up: "Is there anything else I can help you with?"
 
-            **ACCOUNT CONFIRMATION (STRUCTURED):**
-            - "**Account confirmed!** Welcome [name], you're now connected to account **[masked_account]**"
-            - List services with bullet points
-            - "What can I help you with today?"
+        **VERIFICATION RESPONSES (STRUCTURED):**
+        - After greeting: "Verification successful. Thank you, your identity has been verified."
+        - "Please answer any two of the following questions:"
+        - Number the verification steps clearly
 
-            **SPENDING ANALYSIS (STRUCTURED DATA):**
-            - Use clear headers with **bold** formatting
-            - Present data in structured format with bullet points
-            - Include totals and percentages where relevant
-            - No long explanations, just the data
+        **TRANSFER RESPONSES (DIRECT CONFIRMATION):**
+        - After greeting: "Success! You have successfully transferred [Currency] [Amount] to [Recipient]."
+        - "Reference: [reference] Date: [date] Updated Balance: [Currency] [Amount]"
+        - "Would you like to do anything else? (View transactions, check spending, send more money?)"
 
-            **ERROR HANDLING (PROFESSIONAL & BRIEF):**
-            - "**Error:** [Brief error explanation]"
-            - Provide clear next steps
-            - Keep it concise and professional
+        **ACCOUNT CONFIRMATION (STRUCTURED):**
+        - After greeting: "Account confirmed! Welcome [name], you're now connected to account [masked_account]"
+        - List services with bullet points
+        - "What can I help you with today?"
 
-            **GENERAL STYLE RULES:**
-            1. **Be Direct**: Don't explain every detail, just present the data
-            2. **Use Structure**: Bullet points, clear headers, organized layout
-            3. **Bold Important Info**: Use **bold** for amounts, names, status
-            4. **End with Options**: Always provide helpful follow-up choices
-            5. **No Narrative**: Don't tell a story, just show the information
-            6. **NO EMOJIS**: Use only text and **bold** formatting
-            7. **Consistent Format**: Same structure for similar types of responses
+        **SPENDING ANALYSIS (STRUCTURED DATA):**
+        - After greeting, use clear headers with bold formatting
+        - Present data in structured format with bullet points
+        - Include totals and percentages where relevant
+        - No long explanations, just the data
 
-            CURRENT CONTEXT: {context_state}
-            USER'S MESSAGE: "{user_message}"
-            AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
+        **ERROR HANDLING (PROFESSIONAL & BRIEF):**
+        - After greeting: "Error: [Brief error explanation]"
+        - Provide clear next steps
+        - Keep it concise and professional
 
-            CONVERSATION HISTORY (Your memory):
-            {conversation_history}
+        **GENERAL STYLE RULES:**
+        1. **ALWAYS START WITH GREETING:** "Hello [FirstName]! [context]"
+        2. **Be Direct**: Don't explain every detail, just present the data
+        3. **Use Structure**: Bullet points, clear headers, organized layout
+        4. **Bold Important Info**: Use **bold** for amounts, names, status
+        5. **End with Options**: Always provide helpful follow-up choices
+        6. **No Narrative**: Don't tell a story, just show the information
+        7. **NO ASTERISKS**: Use only text and **bold** formatting - NEVER use * symbols
+        8. **Consistent Format**: Same structure for similar types of responses
 
-            CONTEXTUAL RESPONSE RULES:
-            1. **Reference Previous Data**: Connect to previous conversation naturally
-            2. **Build on Context**: Make it feel continuous but stay direct
-            3. **Use Specific Data**: Reference exact amounts and details
-            4. **Apply ChatGPT Style**: Direct, structured, to-the-point formatting
-            5. **Professional Presentation**: Clean, organized, easy to scan
-            6. **NO EMOJIS**: Use only text formatting
+        CURRENT CONTEXT: {context_state}
+        USER'S MESSAGE: "{user_message}"
+        AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
 
-            Generate a direct, structured response in ChatGPT banking style that presents the information clearly without unnecessary narrative explanation. DO NOT use any emojis."""
+        CONVERSATION HISTORY (Your memory):
+        {conversation_history}
+
+        CONTEXTUAL RESPONSE RULES:
+        1. **Reference Previous Data**: Connect to previous conversation naturally
+        2. **Build on Context**: Make it feel continuous but stay direct
+        3. **Use Specific Data**: Reference exact amounts and details
+        4. **Apply ChatGPT Style**: Direct, structured, to-the-point formatting
+        5. **Professional Presentation**: Clean, organized, easy to scan
+        6. **NO ASTERISKS**: Use only text formatting - absolutely no * symbols anywhere
+
+        Generate a direct, structured response in ChatGPT banking style that presents the information clearly without unnecessary narrative explanation. Start with "Hello [FirstName]!" and NO asterisks anywhere."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=system_prompt)])
