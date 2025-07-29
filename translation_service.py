@@ -4,6 +4,12 @@ import logging
 from dotenv import load_dotenv
 import os
 import re
+
+# Import constants
+from constants import (
+    Languages, LLMConfig, RegexPatterns
+)
+
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -40,34 +46,34 @@ class TranslationService:
 Text: "{text}"
 
 Language Detection Rules:
-1. If text is STANDARD ENGLISH (proper English words and grammar) → return "en"
-2. If text is ROMAN URDU (Urdu/Hindi words written in English letters) → return "ur-roman" 
-3. If text is URDU in Arabic script → return "ur"
+1. If text is STANDARD ENGLISH (proper English words and grammar) → return "{Languages.ENGLISH}"
+2. If text is ROMAN URDU (Urdu/Hindi words written in English letters) → return "{Languages.URDU_ROMAN}" 
+3. If text is URDU in Arabic script → return "{Languages.URDU_ARABIC}"
 4. If text is any other language → return the 2-letter ISO code (de, fr, es, ar, etc.)
 
 Examples:
-- "what are my last 3 transactions" → "en" (Standard English)
-- "check my balance please" → "en" (Standard English)  
-- "show me transaction history" → "en" (Standard English)
-- "mera balance kya hai" → "ur-roman" (Roman Urdu)
-- "meine last mahine kitna khracha kiya" → "ur-roman" (Roman Urdu)
-- "account me kitna paisa hai" → "ur-roman" (Roman Urdu)
-- "balance check karo" → "ur-roman" (Roman Urdu)
-- "میرا بیلنس کیا ہے" → "ur" (Arabic script Urdu)
+- "what are my last 3 transactions" → "{Languages.ENGLISH}" (Standard English)
+- "check my balance please" → "{Languages.ENGLISH}" (Standard English)  
+- "show me transaction history" → "{Languages.ENGLISH}" (Standard English)
+- "mera balance kya hai" → "{Languages.URDU_ROMAN}" (Roman Urdu)
+- "meine last mahine kitna khracha kiya" → "{Languages.URDU_ROMAN}" (Roman Urdu)
+- "account me kitna paisa hai" → "{Languages.URDU_ROMAN}" (Roman Urdu)
+- "balance check karo" → "{Languages.URDU_ROMAN}" (Roman Urdu)
+- "میرا بیلنس کیا ہے" → "{Languages.URDU_ARABIC}" (Arabic script Urdu)
 - "wie geht es dir" → "de" (German)
 
-Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.). Nothing else."""
+Response format: Return ONLY the language code ({Languages.ENGLISH}, {Languages.URDU_ROMAN}, {Languages.URDU_ARABIC}, de, fr, etc.). Nothing else."""
 
             response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=LLMConfig.MODEL_NAME,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
+                max_tokens=LLMConfig.MAX_TOKENS_OTP,
                 temperature=0
             )
             
             detected_lang = response.choices[0].message.content.strip().lower()
             
-            if detected_lang in LANGUAGES or detected_lang in ['ur', 'ur-roman']:
+            if detected_lang in LANGUAGES or detected_lang in Languages.URDU_VARIANTS:
                 logger.info(f"LLM detected language '{detected_lang}' for text: '{text}'")
                 return detected_lang
             else:
@@ -85,7 +91,7 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
         
         try:
             # Special handling for Roman Urdu to English
-            if source_lang == 'ur-roman' and target_lang == 'en':
+            if source_lang == Languages.URDU_ROMAN and target_lang == Languages.ENGLISH:
                 prompt = f"""You are an expert Roman Urdu to English translator. Translate this text accurately while preserving all numbers, names, and banking terms.
 
     Text to translate: "{text}"
@@ -111,7 +117,7 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
 
     Return ONLY the English translation, nothing else."""
 
-            elif source_lang == 'en' and target_lang == 'ur-roman':
+            elif source_lang == Languages.ENGLISH and target_lang == Languages.URDU_ROMAN:
                 prompt = f"""You are an expert English to Roman Urdu translator. Translate this COMPLETE English text to Roman Urdu (Urdu written in English letters) while preserving all numbers and technical terms. TRANSLATE THE ENTIRE TEXT - DO NOT TRUNCATE.
 
     Text to translate: "{text}"
@@ -136,7 +142,7 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
 
     Return ONLY the complete Roman Urdu translation in English letters, nothing else."""
 
-            elif source_lang == 'ur' and target_lang == 'en':
+            elif source_lang == Languages.URDU_ARABIC and target_lang == Languages.ENGLISH:
                 # Arabic script Urdu to English
                 prompt = f"""You are an expert Urdu to English translator. Translate this Arabic script Urdu text accurately while preserving all numbers, names, and banking terms.
 
@@ -150,7 +156,7 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
 
     Return ONLY the English translation, nothing else."""
 
-            elif source_lang == 'en' and target_lang == 'ur':
+            elif source_lang == Languages.ENGLISH and target_lang == Languages.URDU_ARABIC:
                 # English to Arabic script Urdu
                 prompt = f"""You are an expert English to Urdu translator. Translate this COMPLETE English text to natural Urdu in Arabic script while preserving all numbers and technical terms. TRANSLATE THE ENTIRE TEXT - DO NOT TRUNCATE.
 
@@ -176,9 +182,9 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
     Return only the complete translation."""
 
             response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=LLMConfig.MODEL_NAME,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
+                temperature=LLMConfig.TEMPERATURE_TRANSLATION
             )
             
             translated = response.choices[0].message.content.strip()
@@ -206,7 +212,7 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
     def translate_to_english(self, text: str, source_lang: str) -> str:
         """Enhanced translation to English with LLM priority."""
         try:
-            if source_lang == 'en':
+            if source_lang == Languages.ENGLISH:
                 return text
             
             # Don't translate number-only text
@@ -215,10 +221,10 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
                 return text
             
             # Use LLM for better translation, especially Roman Urdu and Arabic Urdu
-            if self.use_llm and source_lang in ['ur', 'ur-roman']:
-                return self.translate_with_llm(text, source_lang, 'en')
+            if self.use_llm and source_lang in Languages.URDU_VARIANTS:
+                return self.translate_with_llm(text, source_lang, Languages.ENGLISH)
             else:
-                return self.translate_with_google(text, source_lang, 'en')
+                return self.translate_with_google(text, source_lang, Languages.ENGLISH)
             
         except Exception as e:
             logger.error(f"Translation to English failed: {e}")
@@ -227,14 +233,14 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
     def translate_from_english(self, text: str, target_lang: str) -> str:
         """Enhanced translation from English with LLM priority."""
         try:
-            if target_lang == 'en':
+            if target_lang == Languages.ENGLISH:
                 return text
             
             # Use LLM for better translation, especially to Urdu variants
-            if self.use_llm and target_lang in ['ur', 'ur-roman']:
-                return self.translate_with_llm(text, 'en', target_lang)
+            if self.use_llm and target_lang in Languages.URDU_VARIANTS:
+                return self.translate_with_llm(text, Languages.ENGLISH, target_lang)
             else:
-                return self.translate_with_google(text, 'en', target_lang)
+                return self.translate_with_google(text, Languages.ENGLISH, target_lang)
             
         except Exception as e:
             logger.error(f"Translation from English failed: {e}")
@@ -246,10 +252,10 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
             if len(text.strip()) < 3:
                 if sender_id and get_last_language_func:
                     last_lang = get_last_language_func(sender_id)
-                    if last_lang != 'en':
+                    if last_lang != Languages.ENGLISH:
                         logger.info(f"Short text detected, using last language: {last_lang}")
                         return last_lang
-                return 'en'
+                return Languages.ENGLISH
             
             # Check if text is number-only
             if self.is_number_only_text(text):
@@ -258,7 +264,7 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
                     logger.info(f"Number-only text detected: '{text}', using last language: {last_lang}")
                     return last_lang
                 else:
-                    return 'en'
+                    return Languages.ENGLISH
             
             # Use LLM for detection if available
             if self.use_llm:
@@ -268,15 +274,15 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
                 detected = self.fallback_detection(text)
                 logger.info(f"Fallback detection result: '{detected}' for text: '{text}'")
             
-            if detected in LANGUAGES or detected in ['ur', 'ur-roman']:
+            if detected in LANGUAGES or detected in Languages.URDU_VARIANTS:
                 return detected
             else:
                 logger.warning(f"Detected language '{detected}' not supported, defaulting to English")
-                return 'en'
+                return Languages.ENGLISH
                 
         except Exception as e:
             logger.warning(f"Language detection failed: {e}, defaulting to English")
-            return 'en'
+            return Languages.ENGLISH
         
     def fallback_detection(self, text: str) -> str:
         """Simple fallback using langdetect only."""
@@ -286,10 +292,10 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
                 logger.info(f"Fallback detected language '{detected}' for text: '{text}'")
                 return detected
             else:
-                return 'en'
+                return Languages.ENGLISH
         except Exception as e:
             logger.warning(f"Fallback detection failed: {e}, defaulting to English")
-            return 'en'
+            return Languages.ENGLISH
 
     def is_number_only_text(self, text: str) -> bool:
         """Check if text contains only numbers, spaces, and basic punctuation."""
@@ -298,9 +304,9 @@ Response format: Return ONLY the language code (en, ur-roman, ur, de, fr, etc.).
     
     def get_language_name(self, lang_code: str) -> str:
         """Get human-readable language name."""
-        if lang_code == 'ur':
+        if lang_code == Languages.URDU_ARABIC:
             return 'Urdu (Arabic Script)'
-        elif lang_code == 'ur-roman':
+        elif lang_code == Languages.URDU_ROMAN:
             return 'Roman Urdu (English Letters)'
         return LANGUAGES.get(lang_code, lang_code.title())
     

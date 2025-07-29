@@ -9,6 +9,12 @@ import re
 import logging
 from ai_agent import BankingAIAgent
 
+# Import constants
+from constants import (
+    DatabaseFields, StatusMessages, Currencies, TransactionTypes, 
+    WebhookConfig, MongoConfig, Limits
+)
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,7 +38,7 @@ class MoneyTransferRequest(BaseModel):
     from_account: str
     to_recipient: str
     amount: float
-    currency: str = "PKR"  # Default to PKR since most transactions are in PKR
+    currency: str = Currencies.PKR  # Default to PKR since most transactions are in PKR
 
 class PipelineQuery(BaseModel):
     account_number: str
@@ -121,29 +127,29 @@ def verify_cnic(data: CNICVerifyRequest):
         logger.info(f"🔍 Verifying CNIC: {cnic}")
         
         # Find user by CNIC in transactions collection
-        user_record = transactions.find_one({"cnic": cnic})
+        user_record = transactions.find_one({DatabaseFields.CNIC: cnic})
         
         if user_record:
             # Get all unique accounts for this CNIC
-            accounts = list(transactions.distinct("account_number", {"cnic": cnic}))
+            accounts = list(transactions.distinct(DatabaseFields.ACCOUNT_NUMBER, {DatabaseFields.CNIC: cnic}))
             
-            logger.info(f"✅ CNIC verified. Found {len(accounts)} accounts for {user_record['name']}")
+            logger.info(f"✅ CNIC verified. Found {len(accounts)} accounts for {user_record[DatabaseFields.NAME]}")
             
             return {
-                "status": "success",
+                "status": StatusMessages.SUCCESS,
                 "user": {
-                    "name": user_record["name"],
-                    "cnic": cnic,
+                    DatabaseFields.NAME: user_record[DatabaseFields.NAME],
+                    DatabaseFields.CNIC: cnic,
                     "accounts": accounts
                 }
             }
         else:
             logger.warning(f"❌ CNIC not found: {cnic}")
-            return {"status": "fail", "reason": "CNIC not found"}
+            return {"status": StatusMessages.FAIL, "reason": "CNIC not found"}
             
     except Exception as e:
         logger.error(f"CNIC verification error: {e}")
-        return {"status": "fail", "reason": "Verification failed"}
+        return {"status": StatusMessages.FAIL, "reason": "Verification failed"}
 
 @router.post("/select_account")
 def select_account(data: AccountSelectionRequest):
@@ -156,28 +162,28 @@ def select_account(data: AccountSelectionRequest):
         
         # Verify that this account belongs to this CNIC
         account_record = transactions.find_one({
-            "cnic": cnic,
-            "account_number": account_number
+            DatabaseFields.CNIC: cnic,
+            DatabaseFields.ACCOUNT_NUMBER: account_number
         })
         
         if account_record:
-            logger.info(f"✅ Account selection verified for {account_record['name']}")
+            logger.info(f"✅ Account selection verified for {account_record[DatabaseFields.NAME]}")
             
             return {
-                "status": "success",
+                "status": StatusMessages.SUCCESS,
                 "user": {
-                    "name": account_record["name"],
-                    "cnic": cnic,
+                    DatabaseFields.NAME: account_record[DatabaseFields.NAME],
+                    DatabaseFields.CNIC: cnic,
                     "selected_account": account_number
                 }
             }
         else:
             logger.warning(f"❌ Account {account_number} not found for CNIC {cnic}")
-            return {"status": "fail", "reason": "Account not found for this CNIC"}
+            return {"status": StatusMessages.FAIL, "reason": "Account not found for this CNIC"}
             
     except Exception as e:
         logger.error(f"Account selection error: {e}")
-        return {"status": "fail", "reason": "Account selection failed"}
+        return {"status": StatusMessages.FAIL, "reason": "Account selection failed"}
 
 @router.post("/user_balance")
 async def get_user_balance(data: UserBalanceQuery):
@@ -186,26 +192,26 @@ async def get_user_balance(data: UserBalanceQuery):
         account_number = data.account_number.strip()
         
         # Get user info from latest transaction
-        user_record = transactions.find_one({"account_number": account_number})
+        user_record = transactions.find_one({DatabaseFields.ACCOUNT_NUMBER: account_number})
         if not user_record:
-            return {"status": "fail", "reason": "Account not found"}
+            return {"status": StatusMessages.FAIL, "reason": "Account not found"}
         
         # Get latest transaction for most current balance
         latest_txn = transactions.find_one(
-            {"account_number": account_number},
-            sort=[("date", -1), ("_id", -1)]
+            {DatabaseFields.ACCOUNT_NUMBER: account_number},
+            sort=[(DatabaseFields.DATE, -1), ("_id", -1)]
         )
         
         if latest_txn:
             # Extract balance from account_balance field
-            current_balance = latest_txn.get("account_balance", 0)
-            account_currency = latest_txn.get("account_currency", "pkr")
+            current_balance = latest_txn.get(DatabaseFields.ACCOUNT_BALANCE, 0)
+            account_currency = latest_txn.get(DatabaseFields.ACCOUNT_CURRENCY, Currencies.PKR_LOWER)
         else:
             current_balance = 0
-            account_currency = "pkr"
+            account_currency = Currencies.PKR_LOWER
         
         # Format balance by currency
-        if account_currency.lower() == "usd":
+        if account_currency.lower() == Currencies.USD_LOWER:
             balance_usd = current_balance
             balance_pkr = 0
         else:
@@ -213,19 +219,19 @@ async def get_user_balance(data: UserBalanceQuery):
             balance_pkr = current_balance
         
         return {
-            "status": "success",
+            "status": StatusMessages.SUCCESS,
             "user": {
-                "first_name": user_record["name"].split()[0],  # Get first name
-                "last_name": user_record["name"].split()[-1] if len(user_record["name"].split()) > 1 else "",
-                "account_number": account_number,
+                "first_name": user_record[DatabaseFields.NAME].split()[0],  # Get first name
+                "last_name": user_record[DatabaseFields.NAME].split()[-1] if len(user_record[DatabaseFields.NAME].split()) > 1 else "",
+                DatabaseFields.ACCOUNT_NUMBER: account_number,
                 "current_balance_usd": balance_usd,
                 "current_balance_pkr": balance_pkr,
-                "account_currency": account_currency
+                DatabaseFields.ACCOUNT_CURRENCY: account_currency
             }
         }
     except Exception as e:
         logger.error(f"Balance error: {e}")
-        return {"status": "fail", "error": str(e)}
+        return {"status": StatusMessages.FAIL, "error": str(e)}
 
 @router.post("/execute_pipeline")
 async def execute_pipeline(data: PipelineQuery):
@@ -233,10 +239,10 @@ async def execute_pipeline(data: PipelineQuery):
     try:
         # Validate input
         if not data.pipeline:
-            return {"status": "fail", "reason": "Empty pipeline provided"}
+            return {"status": StatusMessages.FAIL, "reason": "Empty pipeline provided"}
         
         if not data.account_number:
-            return {"status": "fail", "reason": "Account number is required"}
+            return {"status": StatusMessages.FAIL, "reason": "Account number is required"}
         
         # Process pipeline to handle date objects
         processed_pipeline = process_pipeline_dates(data.pipeline)
@@ -252,13 +258,13 @@ async def execute_pipeline(data: PipelineQuery):
         logger.info(f"Pipeline execution successful. Returned {len(result)} documents")
         
         return {
-            "status": "success",
+            "status": StatusMessages.SUCCESS,
             "data": result,
             "count": len(result)
         }
     except Exception as e:
         logger.error(f"Pipeline execution error: {e}")
-        return {"status": "fail", "error": str(e)}
+        return {"status": StatusMessages.FAIL, "error": str(e)}
 
 @router.post("/transfer_money")
 async def transfer_money(data: MoneyTransferRequest):
@@ -266,39 +272,39 @@ async def transfer_money(data: MoneyTransferRequest):
     try:
         # Validate input
         if data.amount <= 0:
-            return {"status": "fail", "reason": "Transfer amount must be positive"}
+            return {"status": StatusMessages.FAIL, "reason": "Transfer amount must be positive"}
         
-        if data.currency.upper() not in ["USD", "PKR"]:
-            return {"status": "fail", "reason": "Currency must be USD or PKR"}
+        if data.currency.upper() not in Currencies.SUPPORTED:
+            return {"status": StatusMessages.FAIL, "reason": f"Currency must be {' or '.join(Currencies.SUPPORTED)}"}
         
         # Get account info
-        account_record = transactions.find_one({"account_number": data.from_account})
+        account_record = transactions.find_one({DatabaseFields.ACCOUNT_NUMBER: data.from_account})
         if not account_record:
-            return {"status": "fail", "reason": "Sender account not found"}
+            return {"status": StatusMessages.FAIL, "reason": "Sender account not found"}
         
         # Get current balance from latest transaction
         latest_txn = transactions.find_one(
-            {"account_number": data.from_account},
-            sort=[("date", -1), ("_id", -1)]
+            {DatabaseFields.ACCOUNT_NUMBER: data.from_account},
+            sort=[(DatabaseFields.DATE, -1), ("_id", -1)]
         )
         
         if latest_txn:
-            current_balance = latest_txn.get("account_balance", 0)
-            account_currency = latest_txn.get("account_currency", "pkr")
+            current_balance = latest_txn.get(DatabaseFields.ACCOUNT_BALANCE, 0)
+            account_currency = latest_txn.get(DatabaseFields.ACCOUNT_CURRENCY, Currencies.PKR_LOWER)
         else:
-            return {"status": "fail", "reason": "No transaction history found"}
+            return {"status": StatusMessages.FAIL, "reason": "No transaction history found"}
         
         # Check if currencies match
         if data.currency.upper() != account_currency.upper():
             return {
-                "status": "fail", 
+                "status": StatusMessages.FAIL, 
                 "reason": f"Cannot transfer {data.currency} from {account_currency} account"
             }
         
         # Check sufficient balance
         if current_balance < data.amount:
             return {
-                "status": "fail", 
+                "status": StatusMessages.FAIL, 
                 "reason": f"Insufficient {data.currency} balance. Available: {current_balance:.2f}, Required: {data.amount:.2f}"
             }
         
@@ -307,18 +313,18 @@ async def transfer_money(data: MoneyTransferRequest):
         
         # Create transfer transaction
         transfer_txn = {
-            "name": account_record["name"],
-            "cnic": account_record["cnic"],
-            "account_number": data.from_account,
-            "date": datetime.now(),
-            "type": "debit",
-            "description": f"Transfer to {data.to_recipient}",
-            "category": "Transfer",
-            "account_currency": account_currency.lower(),
-            "amount_deducted_from_account": data.amount,
-            "transaction_amount": data.amount,
-            "transaction_currency": data.currency.lower(),
-            "account_balance": new_balance
+            DatabaseFields.NAME: account_record[DatabaseFields.NAME],
+            DatabaseFields.CNIC: account_record[DatabaseFields.CNIC],
+            DatabaseFields.ACCOUNT_NUMBER: data.from_account,
+            DatabaseFields.DATE: datetime.now(),
+            DatabaseFields.TYPE: TransactionTypes.DEBIT,
+            DatabaseFields.DESCRIPTION: f"Transfer to {data.to_recipient}",
+            DatabaseFields.CATEGORY: "Transfer",
+            DatabaseFields.ACCOUNT_CURRENCY: account_currency.lower(),
+            DatabaseFields.AMOUNT_DEDUCTED_FROM_ACCOUNT: data.amount,
+            DatabaseFields.TRANSACTION_AMOUNT: data.amount,
+            DatabaseFields.TRANSACTION_CURRENCY: data.currency.lower(),
+            DatabaseFields.ACCOUNT_BALANCE: new_balance
         }
         
         # Insert transaction
@@ -328,7 +334,7 @@ async def transfer_money(data: MoneyTransferRequest):
         logger.info(f"Updated balance: {new_balance} {account_currency}")
         
         return {
-            "status": "success",
+            "status": StatusMessages.SUCCESS,
             "message": f"Successfully transferred {data.amount} {data.currency} to {data.to_recipient}",
             "transaction_id": str(txn_result.inserted_id),
             "new_balance": new_balance,
@@ -337,12 +343,12 @@ async def transfer_money(data: MoneyTransferRequest):
                 "amount": data.amount,
                 "currency": data.currency,
                 "recipient": data.to_recipient,
-                "timestamp": transfer_txn["date"].isoformat()
+                "timestamp": transfer_txn[DatabaseFields.DATE].isoformat()
             }
         }
     except Exception as e:
         logger.error(f"Transfer error: {e}")
-        return {"status": "fail", "error": str(e)}
+        return {"status": StatusMessages.FAIL, "error": str(e)}
 
 @router.post("/process_query", response_model=ProcessQueryResponse)
 async def process_query(data: ProcessQueryRequest):
@@ -369,7 +375,7 @@ async def process_query(data: ProcessQueryRequest):
         })
         
         return ProcessQueryResponse(
-            status="success",
+            status=StatusMessages.SUCCESS,
             response=response
         )
         
@@ -382,7 +388,7 @@ async def process_query(data: ProcessQueryRequest):
         })
         
         return ProcessQueryResponse(
-            status="error",
+            status=StatusMessages.ERROR,
             response="Sorry, an error occurred while processing your request. Please try again.",
             error=str(e)
         )
@@ -392,7 +398,7 @@ async def process_query(data: ProcessQueryRequest):
 async def health_check():
     """Health check endpoint for monitoring."""
     return {
-        "status": "healthy",
+        "status": StatusMessages.HEALTHY,
         "timestamp": datetime.now().isoformat(),
         "service": "enhanced_banking_ai_backend",
         "authentication": "cnic_otp_smart_account_selection",

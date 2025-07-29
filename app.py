@@ -1,9 +1,14 @@
 from fastapi import FastAPI
 from api_routes import router
 
+# Import constants
+from constants import (
+    VerificationStages, BankingIntents, WebhookConfig
+)
+
 app = FastAPI(
     title="Enhanced Banking AI Assistant - Full Authentication & Context System",
-    description="""
+    description=f"""
     Advanced CNIC-based banking assistant with comprehensive authentication and intelligent context management.
     
     Features:
@@ -19,6 +24,22 @@ app = FastAPI(
     Authentication Flow: CNIC → OTP → Smart Account Selection → Full Banking Access
     Transfer Flow: Details → OTP → Confirmation → Execution
     Context Management: Multi-layer memory with intelligent reference resolution
+    
+    Verification Stages:
+    • {VerificationStages.NOT_VERIFIED}: Initial state
+    • {VerificationStages.CNIC_VERIFIED}: CNIC verified, awaiting OTP
+    • {VerificationStages.OTP_VERIFIED}: OTP verified, awaiting account selection
+    • {VerificationStages.ACCOUNT_SELECTED}: Fully authenticated
+    • {VerificationStages.TRANSFER_OTP_PENDING}: Transfer OTP required
+    • {VerificationStages.TRANSFER_CONFIRMATION_PENDING}: Transfer confirmation required
+    
+    Banking Intents:
+    • {BankingIntents.BALANCE_INQUIRY}: Check account balance
+    • {BankingIntents.TRANSACTION_HISTORY}: View transaction history
+    • {BankingIntents.SPENDING_ANALYSIS}: Analyze spending patterns
+    • {BankingIntents.CATEGORY_SPENDING}: Category-based spending analysis
+    • {BankingIntents.TRANSFER_MONEY}: Money transfer operations
+    • {BankingIntents.GENERAL}: General banking assistance
     """,
     version="3.0.0"
 )
