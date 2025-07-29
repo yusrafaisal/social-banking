@@ -70,6 +70,8 @@ async def webhook(request: Request):
 VOICE_MESSAGE_COOLDOWN = 15  # seconds
 
 # In receive_message function
+webhook_message_cache = {}
+
 @app.post("/webhook")
 async def receive_message(request: Request):
     try:
@@ -85,6 +87,21 @@ async def receive_message(request: Request):
             sender_id = messaging_event["sender"]["id"]
 
             if "message" in messaging_event:
+                # Add webhook-level deduplication
+                message_id = messaging_event["message"].get("mid")
+                if message_id and message_id in webhook_message_cache:
+                    logger.info(f"🔄 WEBHOOK: Duplicate message blocked at webhook level: {message_id}")
+                    continue
+                
+                if message_id:
+                    webhook_message_cache[message_id] = time.time()
+                    
+                # Clean old cache entries (keep last 100)
+                if len(webhook_message_cache) > 100:
+                    old_entries = sorted(webhook_message_cache.items(), key=lambda x: x[1])[:50]
+                    for old_id, _ in old_entries:
+                        del webhook_message_cache[old_id]
+
                 # Handle text messages
                 if "text" in messaging_event["message"]:
                     user_message = messaging_event["message"]["text"]
