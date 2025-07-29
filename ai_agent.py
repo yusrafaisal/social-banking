@@ -731,7 +731,6 @@ class BankingAIAgent:
             memory.chat_memory.add_ai_message(response)
             return response
 
-
         # Handle greetings and simple queries
         if self._is_simple_greeting_or_general(user_message):
             context_state = "User sent a greeting or general question, no specific banking data needed"
@@ -1520,86 +1519,7 @@ class BankingAIAgent:
             # For uncertain cases during authentication flow, be more lenient
             logger.info(f"⚠️ Fallback: Uncertain query, allowing for safety: '{user_message}'")
             return False  # Changed from True to False for authentication flow
-    
-    # def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
-    #     """Detect clearly non-banking queries and block them."""
-    #     try:
-    #         non_banking_detection_prompt = f"""
-    #         You are a STRICT banking query filter. Your job is to BLOCK any query that is NOT directly related to banking operations.
-
-    #         User message: "{user_message}"
-    #         Conversation history: {conversation_history[:100]}...
-
-    #         ALLOWED BANKING QUERIES ONLY:
-    #         - Account balance checks
-    #         - Transaction history and details
-    #         - Money transfers and payments
-    #         - Spending analysis and budgets
-    #         - Currency conversions of banking amounts
-    #         - Account management questions
-
-    #         BLOCK EVERYTHING ELSE (return "YES" to block):
-    #         - Job applications: "I want a job at Amazon"
-    #         - General knowledge: "Who is the CEO of Apple", "What is the price of X"
-    #         - Weather, sports, entertainment: "Weather today", "Football scores"
-    #         - Technology: "How does AI work", "What is Python"
-    #         - Shopping: "Where to buy X", "Price of Y"
-    #         - Health/Medical advice
-    #         - Travel information
-    #         - News and current events
-    #         - Personal relationships
-    #         - Education questions
-    #         - Cooking/recipes
-    #         - ANY topic not directly about the user's bank account
-
-    #         CRITICAL RULES:
-    #         1. If the query is about ANYTHING other than the user's banking/financial account → return "YES" (BLOCK)
-    #         2. Only allow queries that require access to banking data or account information
-    #         3. When in doubt, BLOCK (return "YES")
-    #         4. Be AGGRESSIVE in blocking - this is a banking assistant, not a general chatbot
-
-    #         Return "YES" to BLOCK non-banking queries, "NO" only for genuine banking queries.
-    #         """
-
-    #         response = self.llm.invoke([SystemMessage(content=non_banking_detection_prompt)])
-    #         result = response.content.strip().upper()
-            
-    #         is_non_banking = result == "YES"
-            
-    #         if is_non_banking:
-    #             logger.info(f"🚫 BLOCKED non-banking query: '{user_message}'")
-    #         else:
-    #             logger.info(f"✅ ALLOWED banking query: '{user_message}'")
-            
-    #         return is_non_banking
-            
-    #     except Exception as e:
-    #         logger.error(f"Error in non-banking detection: {e}")
-    #         # Fallback: be more aggressive in blocking
-    #         non_banking_keywords = [
-    #             "ceo", "weather", "sports", "movie", "celebrity", "politics", 
-    #             "job", "amazon", "apple", "google", "microsoft", "hire", "career",
-    #             "price", "buy", "sell", "market", "stock", "invest", "crypto",
-    #             "recipe", "cook", "health", "doctor", "medicine", "travel",
-    #             "python", "programming", "ai", "technology", "computer"
-    #         ]
-    #         banking_keywords = ["balance", "transaction", "transfer", "money", "account", "spending", "pay", "currency"]
-            
-    #         user_lower = user_message.lower()
-            
-    #         # If contains banking keywords, allow
-    #         if any(keyword in user_lower for keyword in banking_keywords):
-    #             return False
-                
-    #         # If contains non-banking keywords, block
-    #         if any(keyword in user_lower for keyword in non_banking_keywords):
-    #             logger.info(f"🚫 Fallback blocked non-banking query: '{user_message}'")
-    #             return True
-                
-    #         # Default to blocking if uncertain
-    #         logger.info(f"🚫 Default blocked uncertain query: '{user_message}'")
-    #         return True
-    
+   
             
         except Exception as e:
             logger.error(f"Error in non-banking detection: {e}")
