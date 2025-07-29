@@ -101,7 +101,7 @@ async def receive_message(request: Request):
                             if sender_id in voice_message_last_time:
                                 if current_time - voice_message_last_time[sender_id] < VOICE_MESSAGE_COOLDOWN:
                                     logger.info(f"🎤 Voice message rate limited for {sender_id}")
-                                    send_message(sender_id, "Please wait a moment before sending another voice message. 🎤")
+                                    send_message(sender_id, "Please wait a moment before sending another voice message. ")
                                     continue
                             
                             # Update voice message timestamp
@@ -456,7 +456,7 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
     # Rate limiting (existing code) - FIXED: Remove duplicate rate limiting
     if sender_id in user_last_message_time:
         if current_time - user_last_message_time[sender_id] < Limits.MESSAGE_RATE_LIMIT_SECONDS:
-            return "I appreciate your enthusiasm! Please give me just a moment to process your previous message before sending another. 😊"
+            return "I appreciate your enthusiasm! Please give me just a moment to process your previous message before sending another."
     
     user_last_message_time[sender_id] = current_time
 
