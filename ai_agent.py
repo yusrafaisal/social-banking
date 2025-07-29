@@ -1389,9 +1389,59 @@ class BankingAIAgent:
             return await self.generate_natural_response(ContextStates.ERROR_OCCURRED, {"error": str(e)}, user_message, first_name, conversation_history)
     
     def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
-        """Always allow queries by bypassing the context-aware filter."""
-        logger.info(f"Bypassing context-aware filter for query: '{user_message}'")
-        return False  # Always allow the query
+        """Detect clearly non-banking queries and block them."""
+        try:
+            non_banking_detection_prompt = f"""
+            You are a banking query filter. Determine if this query is clearly NON-BANKING related.
+
+            User message: "{user_message}"
+            Conversation history: {conversation_history[:200]}...
+
+            BANKING QUERIES (allow):
+            - Account balance, transactions, spending, transfers
+            - Financial advice, budgeting, savings
+            - Banking services, account management
+            - Currency conversion, financial planning
+
+            NON-BANKING QUERIES (block):
+            - General knowledge: "who is the CEO of Apple"
+            - Weather, sports, entertainment, news
+            - Technical questions unrelated to banking
+            - Personal advice not about finances
+
+            Return "YES" if this is clearly NON-BANKING, "NO" if it's banking-related or unclear.
+            """
+
+            response = self.llm.invoke([SystemMessage(content=non_banking_detection_prompt)])
+            result = response.content.strip().upper()
+            
+            is_non_banking = result == "YES"
+            
+            if is_non_banking:
+                logger.info(f"Blocked non-banking query: '{user_message}'")
+            
+            return is_non_banking
+            
+        except Exception as e:
+            logger.error(f"Error in non-banking detection: {e}")
+            # Fallback: allow banking-related keywords, block obvious non-banking
+            non_banking_keywords = ["ceo", "weather", "sports", "movie", "celebrity", "politics"]
+            banking_keywords = ["balance", "transaction", "transfer", "money", "account", "spending"]
+            
+            user_lower = user_message.lower()
+            
+            # If contains banking keywords, allow
+            if any(keyword in user_lower for keyword in banking_keywords):
+                return False
+                
+            # If contains non-banking keywords, block
+            if any(keyword in user_lower for keyword in non_banking_keywords):
+                logger.info(f"Fallback blocked non-banking query: '{user_message}'")
+                return True
+                
+            return False  # Default to allowing if uncertain
+        
+
 
     async def handle_non_banking_query(self, user_message: str, first_name: str) -> str:
         """Handle clearly non-banking related queries with polite decline."""
