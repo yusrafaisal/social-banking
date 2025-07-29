@@ -43,7 +43,7 @@ app = FastAPI()
 
 VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
 
-PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
+PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPAP0Nhv5ZBWpiL6hboNQXrbnp1NKardW6jeCyJbXVKNR0MCooUu0H7xaINNxHLsgM6ZAddqPHTp7J17Kjl9AjqZAZB0xlyNLIIsA9q3VVtCIva0MZA3OQKKUZAZBP4qZBZBfVMr3KID33fAmI7aS4FUxDUczo6HrSW1MbOmoyIw3F2yEAITdwMTt6yYZCw"
 
 # Add this after your other global variables (around line 40-50, after BACKEND_URL)
 BACKEND_URL = WebhookConfig.BACKEND_URL
@@ -118,7 +118,7 @@ async def receive_message(request: Request):
                             if sender_id in voice_message_last_time:
                                 if current_time - voice_message_last_time[sender_id] < VOICE_MESSAGE_COOLDOWN:
                                     logger.info(f"🎤 Voice message rate limited for {sender_id}")
-                                    send_message(sender_id, "Please wait a moment before sending another voice message. 🎤")
+                                    send_message(sender_id, "Please wait a moment before sending another voice message. ")
                                     continue
                             
                             # Update voice message timestamp
@@ -473,7 +473,7 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
     # Rate limiting (existing code) - FIXED: Remove duplicate rate limiting
     if sender_id in user_last_message_time:
         if current_time - user_last_message_time[sender_id] < Limits.MESSAGE_RATE_LIMIT_SECONDS:
-            return "I appreciate your enthusiasm! Please give me just a moment to process your previous message before sending another. 😊"
+            return "I appreciate your enthusiasm! Please give me just a moment to process your previous message before sending another."
     
     user_last_message_time[sender_id] = current_time
 

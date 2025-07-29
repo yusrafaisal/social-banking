@@ -1265,9 +1265,12 @@ class BankingAIAgent:
         
         return f"Data type: {type(data).__name__}"
 
+    # UPDATE ai_agent.py - Replace your generate_natural_response method (NO EMOJIS)
+
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
-        """Generate contextual LLM responses that reference previous conversation naturally with smart formatting."""
-         # Special handling for non-banking queries
+        """Generate contextual LLM responses with ChatGPT-style direct, structured formatting (no emojis)."""
+        
+        # Special handling for non-banking queries (keep existing)
         if "non-banking question" in context_state or data and data.get("query_type") == "non_banking":
             non_banking_prompt = f"""You are Sage, a banking assistant. The user {first_name} just asked a non-banking question that you must politely but firmly decline to answer.
 
@@ -1288,14 +1291,67 @@ class BankingAIAgent:
             except:
                 return f"I'm a banking assistant, {first_name}, and I can only help with your account-related questions like checking balances, viewing transactions, analyzing spending, or transferring money. I don't have information about topics outside of banking. What banking question can I help you with today?"
 
-        # Use LLM to determine response format for banking queries
+        # Use LLM to determine response format for banking queries (keep existing)
         response_format_instruction = await self._determine_response_format_with_llm(user_message, data, context_state)
         
-        # Enhanced system prompt for contextual, conversational responses with smart formatting
-        system_prompt = f"""You are Sage, a conversational banking assistant having an ongoing conversation with {first_name}. You have perfect memory of your conversation and always reference previous context naturally.
+        # ENHANCED system prompt - CHATGPT DIRECT STYLE (NO EMOJIS)
+        system_prompt = f"""You are Sage, a professional banking assistant. Generate responses in the exact ChatGPT banking style: direct, structured, and to-the-point. DO NOT use any emojis.
 
             RESPONSE FORMAT RULES (CRITICAL):
             {response_format_instruction}
+
+            **CHATGPT-STYLE FORMATTING RULES (MANDATORY - NO EMOJIS):**
+            
+            **TRANSACTION HISTORY (DIRECT BULLET POINT STYLE):**
+            - Header: "Here are your **last [X] transactions**:" or "Here are your **[month] transactions**:"
+            - Use bullet points (•) for each transaction
+            - Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
+            - NO narrative explanation of each transaction
+            - End with: "Let me know if you'd like a filter (e.g., only credits, only food-related) or if you want to send money, download a statement, or something else."
+
+            Example Transaction Format:
+            Here are your **last 5 transactions**:
+            • 29-Jul-2025 | Transfer to Ali Raza – gift | Debit | 1,000.00 PKR | Balance: 244,600.00
+            • 28-Jul-2025 | Foodpanda - Dinner | Debit | 2,300.00 PKR | Balance: 245,600.00
+            
+            **BALANCE RESPONSES (DIRECT STYLE):**
+            - "**Account Balance:** PKR **245,600.00** **As of:** **29th July 2025**"
+            - Add helpful follow-up: "Is there anything else I can help you with?"
+
+            **VERIFICATION RESPONSES (STRUCTURED):**
+            - "**Verification successful.** Thank you, your identity has been verified."
+            - "**Please answer any two of the following questions:**"
+            - Number the verification steps clearly
+
+            **TRANSFER RESPONSES (DIRECT CONFIRMATION):**
+            - "**Success!** You have successfully transferred **PKR 1,000** to **Ali Raza**."
+            - "**Reference:** *gift* **Date:** 29-Jul-2025 **Updated Balance:** PKR **244,600.00**"
+            - "Would you like to do anything else? (View transactions, check spending, send more money?)"
+
+            **ACCOUNT CONFIRMATION (STRUCTURED):**
+            - "**Account confirmed!** Welcome [name], you're now connected to account **[masked_account]**"
+            - List services with bullet points
+            - "What can I help you with today?"
+
+            **SPENDING ANALYSIS (STRUCTURED DATA):**
+            - Use clear headers with **bold** formatting
+            - Present data in structured format with bullet points
+            - Include totals and percentages where relevant
+            - No long explanations, just the data
+
+            **ERROR HANDLING (PROFESSIONAL & BRIEF):**
+            - "**Error:** [Brief error explanation]"
+            - Provide clear next steps
+            - Keep it concise and professional
+
+            **GENERAL STYLE RULES:**
+            1. **Be Direct**: Don't explain every detail, just present the data
+            2. **Use Structure**: Bullet points, clear headers, organized layout
+            3. **Bold Important Info**: Use **bold** for amounts, names, status
+            4. **End with Options**: Always provide helpful follow-up choices
+            5. **No Narrative**: Don't tell a story, just show the information
+            6. **NO EMOJIS**: Use only text and **bold** formatting
+            7. **Consistent Format**: Same structure for similar types of responses
 
             CURRENT CONTEXT: {context_state}
             USER'S MESSAGE: "{user_message}"
@@ -1304,45 +1360,15 @@ class BankingAIAgent:
             CONVERSATION HISTORY (Your memory):
             {conversation_history}
 
-            CONTEXTUAL RESPONSE RULES (CRITICAL):
-            1. **Reference Previous Data**: If you previously showed transactions, balances, or spending - reference them specifically
-            - "Looking at those 5 transactions I showed you..."
-            - "From your June spending that we just discussed..."
-            - "Referring back to your balance of $2,341..."
+            CONTEXTUAL RESPONSE RULES:
+            1. **Reference Previous Data**: Connect to previous conversation naturally
+            2. **Build on Context**: Make it feel continuous but stay direct
+            3. **Use Specific Data**: Reference exact amounts and details
+            4. **Apply ChatGPT Style**: Direct, structured, to-the-point formatting
+            5. **Professional Presentation**: Clean, organized, easy to scan
+            6. **NO EMOJIS**: Use only text formatting
 
-            2. **Build on Previous Context**: Make it feel like a continuous conversation
-            - "Now looking at that data..." 
-            - "Based on what we just saw..."
-            - "Following up on those transactions..."
-
-            3. **Use Specific Numbers/Details**: Reference exact amounts, dates, descriptions from previous messages
-            - Instead of: "Your spending was high"
-            - Say: "Your $550 spending on groceries that I mentioned"
-
-            4. **Natural Conversation Flow**: 
-            - If user asks follow-up questions, acknowledge the connection
-            - If showing new data, relate it to previous context when relevant
-            - Make responses feel like you remember everything
-
-            5. **Contextual Greetings**: 
-            - Don't always greet the same way
-            - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
-            - For continuing conversations: "{first_name}, looking at that data..."
-
-            6. **Balance Query Responses**:
-            - If context mentions "balance at specific date", focus on the date and balance amount
-            - If context mentions "average balance", explain the calculation period
-            - Always include currency information for balance responses
-            - Reference the specific date or period requested
-
-            PERSONALITY GUIDELINES:
-            - Be conversational like you're having an ongoing chat
-            - Show you remember previous parts of conversation
-            - Reference specific data points naturally
-            - Make each response build on the previous conversation
-            - Avoid repetitive patterns - vary your language
-
-            Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
+            Generate a direct, structured response in ChatGPT banking style that presents the information clearly without unnecessary narrative explanation. DO NOT use any emojis."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=system_prompt)])
@@ -1350,48 +1376,51 @@ class BankingAIAgent:
         except Exception as e:
             logger.error(f"Error generating contextual response: {e}")
             return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
-        
+
+
+    # ALSO UPDATE your generate_contextual_banking_response method (NO EMOJIS):
+
     async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
-        """Generate banking responses that are highly contextual and reference conversation history."""
+        """Generate banking responses with ChatGPT-style direct, structured formatting (no emojis)."""
         
         conversation_history = self._get_context_summary(memory.chat_memory.messages)
         
-        # Enhanced banking context prompt
-        banking_context_prompt = f"""You are Sage in an ongoing banking conversation with {first_name}. Generate a response that feels natural and references your conversation history.
+        # Enhanced banking context prompt with CHATGPT DIRECT STYLE (NO EMOJIS)
+        banking_context_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, to-the-point. DO NOT use any emojis.
 
-            CONVERSATION HISTORY:
-            {conversation_history}
+            **CHATGPT-STYLE FORMATTING (MANDATORY - NO EMOJIS):**
 
-            USER'S CURRENT REQUEST: "{user_message}"
+            **TRANSACTION LISTS (DIRECT BULLET STYLE):**
+            Header: "Here are your **last [X] transactions**:"
+            Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
+            Footer: "Let me know if you'd like a filter or if you want to send money, download a statement, or something else."
+
+            **BALANCE FORMAT:** 
+            "**Account Balance:** PKR **245,600.00** **As of:** **29th July 2025**"
+
+            **TRANSFER FORMAT:** 
+            "**Success!** You have successfully transferred **PKR 1,000** to **Ali Raza**"
+
+            **VERIFICATION FORMAT:** 
+            "**Verification successful.** Thank you, your identity has been verified."
+
+            **SPENDING ANALYSIS:** 
+            Use structured data presentation with clear headers and bullet points
+
+            CONVERSATION HISTORY: {conversation_history}
+            USER'S REQUEST: "{user_message}"
             INTENT: {intent}
             QUERY RESULTS: {json.dumps(query_result) if query_result else "No data"}
 
-            CONTEXTUAL BANKING RESPONSE RULES:
+            RESPONSE RULES:
+            1. **Be Direct**: Present data clearly without narrative explanation
+            2. **Use Structure**: Bullet points, clear headers, organized layout
+            3. **Reference Context**: Connect to previous conversation when relevant
+            4. **End with Options**: Provide helpful follow-up choices
+            5. **ChatGPT Style**: Professional, structured, to-the-point
+            6. **NO EMOJIS**: Use only text and **bold** formatting
 
-            1. **Reference Previous Conversation**: 
-            - If you showed data before, refer to it: "Looking at those transactions we discussed..."
-            - Connect new data to previous: "Compared to your June spending we looked at..."
-
-            2. **Specific Data References**:
-            - Use exact amounts: "That $77.23 grocery transaction..."
-            - Reference dates: "From your April 5th spending..."
-            - Name specific merchants: "Your Netflix subscription of $15..."
-
-            3. **Natural Follow-ups**:
-            - For "which one" questions: "Looking at that list, the [specific item]..."
-            - For comparisons: "Compared to what we just saw..."
-            - For conversions: "Converting that [specific amount] we mentioned..."
-
-            4. **Transaction Context**:
-            - When showing transactions, describe them conversationally
-            - Reference patterns: "I notice several food purchases..."
-            - Highlight interesting points: "That $350 car payment stands out..."
-
-            5. **Balance Context**:
-            - Reference spending in context of balance: "With your current balance of X, that spending represents..."
-            - Compare to previous periods discussed
-
-            Generate a conversational response that shows you remember and build on your conversation with {first_name}."""
+            Generate a direct, structured response that presents the banking information clearly in ChatGPT style. DO NOT use any emojis."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=banking_context_prompt)])
@@ -1404,7 +1433,9 @@ class BankingAIAgent:
         except Exception as e:
             logger.error(f"Error generating contextual banking response: {e}")
             return await self.generate_natural_response(ContextStates.ERROR_OCCURRED, {"error": str(e)}, user_message, first_name, conversation_history)
+            
     
+
     def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
         """Detect clearly non-banking queries and block them."""
         try:

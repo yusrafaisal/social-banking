@@ -239,3 +239,34 @@ class WebhookConfig:
     BACKEND_URL = "http://localhost:8000"
     FACEBOOK_API_VERSION = "v18.0"
     FACEBOOK_MESSAGES_ENDPOINT = "me/messages"
+
+
+
+class BankingEmojis:
+    """Emojis for consistent banking interface formatting."""
+    # Security & Verification
+    SECURITY = "🔒"
+    VERIFICATION = "🔐" 
+    SUCCESS = "✅"
+    FAILURE = "❌"
+    WARNING = "⚠️"
+    
+    # Banking & Money
+    ACCOUNT = "💼"
+    MONEY = "💰"
+    CARD = "💳"
+    TRANSFER = "💸"
+    BANK = "🏦"
+    
+    # Data & Information
+    DATE = "📅"
+    CHART = "📊"
+    LIST = "📋"
+    TARGET = "🎯"
+    LABEL = "🏷️"
+    
+    # Communication & Process
+    PHONE = "📱"
+    MESSAGE = "💬"
+    PROCESSING = "🔄"
+    LIGHTNING = "⚡"
