@@ -268,12 +268,27 @@ class BankingAIAgent:
             Query: "mujhey inka total kite batao in usd"
             → "what is the total amount of my recent transactions in USD"
 
+            # ADD THESE NEW EXAMPLES FOR BALANCE TRANSFERS:
+            History: "Here's your current account balance: USD 1,554.41 as of July 29, 2025"
+            Query: "ok transfer 1% of that"
+            → "transfer 1% of 1554.41 USD which is 15.54 USD"
+
+            History: "Account Balance: PKR 245,600.00 As of: 29th July 2025"
+            Query: "transfer 2% of that to john"
+            → "transfer 2% of 245600 PKR which is 4912 PKR to john"
+
+            History: "Your current balance is $2,341.50"
+            Query: "send 5% of that amount"
+            → "send 5% of 2341.50 USD which is 117.08 USD"
+
             RULES:
             1. If the query is already standalone (contains complete context), return it unchanged
-            2. If the query references previous data ("which one", "inka total", "that transaction"), resolve it with context
+            2. If the query references previous data ("which one", "inka total", "that transaction", "that balance", "that amount"), resolve it with context
             3. Preserve the user's intent while making it standalone
             4. Convert to English if needed for processing
             5. Include relevant timeframes, amounts, or categories from history
+            6. For percentage calculations, calculate the actual amount and include both percentage and calculated amount
+            7. When "that" refers to a balance, extract the exact amount and calculate percentages
 
             RESOLVED STANDALONE QUERY:
             """
@@ -888,29 +903,44 @@ class BankingAIAgent:
 
             # Enhanced transfer prompt with context
             enhanced_transfer_prompt = f"""
-            Extract transfer details from the query, using conversation history for context:
+                    Extract transfer details from the query, using conversation history for context. Handle multi-turn transfer conversations.
 
-            CONVERSATION HISTORY:
-            {conversation_history}
+                    CONVERSATION HISTORY:
+                    {conversation_history}
 
-            CURRENT TRANSFER REQUEST: "{user_message}"
+                    CURRENT TRANSFER REQUEST: "{user_message}"
 
-            Rules:
-            - If message mentions percentages of "that" or "it", calculate based on amounts in conversation history
-            - Extract exact amount, currency, and recipient
-            - For "1% of that $53.14" → amount should be 0.53, currency USD
-            - For "transfer 10% of that PKR amount" → calculate 10% of the PKR amount mentioned
+                    Rules:
+                    - If message mentions percentages of "that" or "it", calculate based on amounts in conversation history
+                    - Extract exact amount, currency, and recipient
+                    - For "1% of that $1,554.41" → amount should be 15.54, currency USD
+                    - For "transfer 10% of that PKR amount" → calculate 10% of the PKR amount mentioned
+                    - If only recipient is provided ("to ahmed abrar"), look for amount/percentage in recent conversation
+                    - If only amount is provided, look for recipient in recent conversation
+                    - Combine information from multiple recent messages to complete transfer details
 
-            Return JSON: {{"amount": number, "currency": string, "recipient": string}}
+                    Enhanced Examples:
+                    History: "Here's your current account balance: USD 1,554.41"
+                    Current: "ok transfer 1% of that" → {{"amount": 15.54, "currency": "USD", "recipient": null}}
 
-            Examples:
-            History: "You spent $53.14 that week"
-            Query: "transfer 1% of that to Ahmed" → {{"amount": 0.53, "currency": "USD", "recipient": "Ahmed"}}
+                    History: "transfer 1% of 1554.41 USD which is 15.54 USD"  
+                    Current: "to ahmed abrar" → {{"amount": 15.54, "currency": "USD", "recipient": "ahmed abrar"}}
 
-            History: "You spent 5000 PKR on food" 
-            Query: "send 5% of that to John" → {{"amount": 250, "currency": "PKR", "recipient": "John"}}
-            """
+                    History: "send 100 USD"
+                    Current: "to john smith" → {{"amount": 100, "currency": "USD", "recipient": "john smith"}}
 
+                    History: "Assistant: I need more details. User: transfer 50 PKR"
+                    Current: "to sarah" → {{"amount": 50, "currency": "PKR", "recipient": "sarah"}}
+
+                    Multi-turn completion rules:
+                    - Look at last 3-4 conversation turns for missing transfer details
+                    - If current message only has recipient, search history for amount
+                    - If current message only has amount, search history for recipient
+                    - Prioritize most recent complete transfer attempt
+
+                    Return JSON: {{"amount": number, "currency": string, "recipient": string}}
+                    Set null for missing fields, but try to complete from conversation history first.
+                    """
             logger.info(f"🔍 TRANSFER DEBUG - Using enhanced prompt for: {user_message}")
 
             response = await llm.ainvoke([SystemMessage(content=enhanced_transfer_prompt)])
@@ -918,6 +948,24 @@ class BankingAIAgent:
             logger.info(f"🔍 TRANSFER DEBUG - LLM response: {response.content}") 
 
             transfer_details = self.extract_json_from_response(response.content)
+            transfer_details = self.extract_json_from_response(response.content)
+
+            # If transfer details are incomplete, try to complete from conversation history
+            if not transfer_details or not all([transfer_details.get("amount"), transfer_details.get("recipient")]):
+                logger.info("Transfer details incomplete, checking conversation history")
+                historical_details = self._extract_incomplete_transfer_from_history(conversation_history, user_message)
+                
+                if historical_details:
+                    # Merge current details with historical details
+                    if not transfer_details:
+                        transfer_details = {}
+                    
+                    for key in ["amount", "currency", "recipient"]:
+                        if not transfer_details.get(key) and historical_details.get(key):
+                            transfer_details[key] = historical_details[key]
+                            logger.info(f"Completed {key} from conversation history: {historical_details[key]}")
+
+            logger.info(f"Final transfer details after context merge: {transfer_details}")
             
             if not transfer_details:
                 context_state = "Transfer details could not be understood, need clarification"
@@ -951,6 +999,43 @@ class BankingAIAgent:
             context_state = ContextStates.ERROR_OCCURRED
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
             return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
+
+
+    def _extract_incomplete_transfer_from_history(self, conversation_history: str, current_message: str) -> Dict[str, Any]:
+        """Extract transfer details from recent conversation history to complete current request."""
+        try:
+            extraction_prompt = f"""
+            Analyze recent conversation to find incomplete transfer details that can complete the current request.
+
+            CONVERSATION HISTORY:
+            {conversation_history}
+
+            CURRENT MESSAGE: "{current_message}"
+
+            Task: If current message provides partial transfer info (just recipient or just amount), 
+            look in conversation history for the missing pieces.
+
+            Examples:
+            History: "transfer 1% of 1554.41 USD which is 15.54 USD"
+            Current: "to ahmed abrar" 
+            → Complete transfer: {{"amount": 15.54, "currency": "USD", "recipient": "ahmed abrar"}}
+
+            History: "I need transfer details" 
+            Current: "to john"
+            → Incomplete: {{"amount": null, "currency": null, "recipient": "john"}}
+
+            Return JSON with completed transfer details or null for missing fields:
+            {{"amount": number_or_null, "currency": string_or_null, "recipient": string_or_null}}
+            """
+            
+            response = self.llm.invoke([SystemMessage(content=extraction_prompt)])
+            result = self.extract_json_from_response(response.content)
+            return result if result else {}
+            
+        except Exception as e:
+            logger.error(f"Error extracting transfer context: {e}")
+            return {}
+        
 
     async def execute_verified_transfer(self, account_number: str, amount: float, currency: str, recipient: str, first_name: str, memory: ConversationBufferMemory) -> str:
         """Execute the transfer after OTP verification."""
@@ -1354,16 +1439,46 @@ class BankingAIAgent:
         CONVERSATION HISTORY (Your memory):
         {conversation_history}
 
-        CONTEXTUAL RESPONSE RULES:
-        1. **Reference Previous Data**: Connect to previous conversation naturally
-        2. **Build on Context**: Make it feel continuous but stay direct
-        3. **Use Specific Data**: Reference exact amounts and details
-        4. **Apply ChatGPT Style**: Direct, structured, to-the-point formatting
-        5. **Professional Presentation**: Clean, organized, easy to scan
-        6. **NO ASTERISKS**: Use only text formatting - absolutely no * symbols anywhere
+        CONTEXTUAL RESPONSE RULES (CRITICAL):
+            1. **Reference Previous Data**: If you previously showed transactions, balances, or spending - reference them specifically
+            - "Looking at those 5 transactions I showed you..."
+            - "From your June spending that we just discussed..."
+            - "Referring back to your balance of $2,341..."
 
-        Generate a direct, structured response in ChatGPT banking style that presents the information clearly without unnecessary narrative explanation. Start with "Hello [FirstName]!" and NO asterisks anywhere."""
+            2. **Build on Previous Context**: Make it feel like a continuous conversation
+            - "Now looking at that data..." 
+            - "Based on what we just saw..."
+            - "Following up on those transactions..."
 
+            3. **Use Specific Numbers/Details**: Reference exact amounts, dates, descriptions from previous messages
+            - Instead of: "Your spending was high"
+            - Say: "Your $550 spending on groceries that I mentioned"
+
+            4. **Natural Conversation Flow**: 
+            - If user asks follow-up questions, acknowledge the connection
+            - If showing new data, relate it to previous context when relevant
+            - Make responses feel like you remember everything
+
+            5. **Contextual Greetings**: 
+            - Don't always greet the same way
+            - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
+            - For continuing conversations: "{first_name}, looking at that data..."
+
+            6. **Balance Query Responses**:
+            - If context mentions "balance at specific date", focus on the date and balance amount
+            - If context mentions "average balance", explain the calculation period
+            - Always include currency information for balance responses
+            - Reference the specific date or period requested
+
+            PERSONALITY GUIDELINES:
+            - Be conversational like you're having an ongoing chat
+            - Show you remember previous parts of conversation
+            - Reference specific data points naturally
+            - Make each response build on the previous conversation
+            - Avoid repetitive patterns - vary your language
+
+            Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
+        
         try:
             response = await llm.ainvoke([SystemMessage(content=system_prompt)])
             return response.content.strip()
@@ -1382,6 +1497,8 @@ class BankingAIAgent:
         # Enhanced banking context prompt with CHATGPT DIRECT STYLE (NO EMOJIS)
         banking_context_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, to-the-point. DO NOT use any emojis.
 
+        
+            
             **CHATGPT-STYLE FORMATTING (MANDATORY - NO EMOJIS):**
 
             **TRANSACTION LISTS (DIRECT BULLET STYLE):**
@@ -1447,18 +1564,30 @@ class BankingAIAgent:
             You are a STRICT banking query filter. Your job is to BLOCK any query that is NOT directly related to banking operations.
 
             User message: "{user_message}"
-            Conversation history: {conversation_history[:100]}...
+            Conversation history: {conversation_history[:200]}...
+
+            CONTEXT-AWARE ANALYSIS:
+            - Check if recent conversation mentions transfers, amounts, or banking operations
+            - If recent context shows transfer in progress, allow recipient names and transfer-related follow-ups
+            - If recent context shows balance inquiry, allow transfer requests referring to "that amount"
 
             ALLOWED BANKING QUERIES ONLY:
             - Account balance checks ("balance", "current balance", "how much money")
             - Transaction history and details
-            - Money transfers and payments
+            - Money transfers and payments (including recipient names in transfer context)
             - Spending analysis and budgets
             - Currency conversions of banking amounts
             - Account management questions
             - CNIC verification requests (format: 12345-1234567-1)
             - Banking authentication steps (OTPs, account numbers)
             - Account numbers, CNIC numbers, banking credentials
+            - Follow-up messages in banking context (recipient names after transfer requests)
+
+            SPECIAL TRANSFER CONTEXT RULES:
+            - If conversation history mentions "transfer", "send money", or percentages → allow recipient names
+            - If history shows balance inquiry → allow "transfer X% of that"  
+            - If history shows incomplete transfer → allow "to [person name]"
+            - Names like "ahmed", "john", "sarah" are ALLOWED if recent context is about transfers
 
             BLOCK EVERYTHING ELSE (return "YES" to block):
             - Entertainment: "Netflix movies", "TV shows", "music recommendations"
@@ -1470,23 +1599,23 @@ class BankingAIAgent:
             - Health/Medical advice
             - Travel information
             - News and current events
-            - Personal relationships
+            - Personal relationships (unless in transfer context)
             - Education questions
             - Cooking/recipes
             - Movie/TV recommendations
             - ANY topic not directly about the user's bank account
 
             CRITICAL RULES:
-            1. If the query is about ANYTHING other than banking/financial account operations → return "YES" (BLOCK)
+            1. If recent conversation history contains transfer/balance context → be MORE LENIENT for follow-ups
             2. NEVER block CNIC numbers (format: 12345-1234567-1) - these are banking credentials
             3. NEVER block account numbers, OTPs, or banking authentication data
-            4. Only allow queries that require access to banking data or account information
-            5. When in doubt about banking vs non-banking, BLOCK (return "YES")
-            6. Entertainment queries like "Netflix movies" must be BLOCKED
-            7. Balance inquiries must be ALLOWED
+            4. In transfer context, allow recipient names and amounts
+            5. When in doubt about banking vs non-banking in transfer context, ALLOW (return "NO")
+            6. Check last 2-3 conversation turns for banking context before blocking
 
-            Return "YES" to BLOCK non-banking queries, "NO" only for genuine banking queries.
+            Return "YES" to BLOCK non-banking queries, "NO" for genuine banking queries and banking follow-ups.
             """
+
 
             response = self.llm.invoke([SystemMessage(content=non_banking_detection_prompt)])
             result = response.content.strip().upper()
