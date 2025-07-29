@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 import httpx
 from prompts import account_selection_prompt
 from langchain_core.messages import SystemMessage
+import aiohttp
+from openai import OpenAI
 
 from ai_agent import llm
 
@@ -40,7 +42,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
-PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPGiZCdRaVk6KrTAiQYclW4ZCZC9e8FiC4EqdOU0zN2gLDaVC1UtXeDXYT7VtnKPyr5NV3TZAgChtsMiDhzgZBsqk6eHZA8IKUQjqlORPXIatiTbs9OekNOeFxL16xOpEM2gJKMgJLR7yo70dPCHWBTyILXZAiBLEzQt9KfZBdOYCIEGyOVDdzMDM9aey"
+
+PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
 
 BACKEND_URL = WebhookConfig.BACKEND_URL
 
@@ -71,31 +74,79 @@ async def receive_message(request: Request):
 
     for entry in data.get("entry", []):
         for messaging_event in entry.get("messaging", []):
-            message_id = messaging_event.get("message", {}).get("mid")
             sender_id = messaging_event["sender"]["id"]
 
-            if message_id and message_id in processed_messages:
-                continue
-
             if "message" in messaging_event:
-                if message_id:
-                    processed_messages.add(message_id)
-                
-                user_message = messaging_event["message"].get("text", "")
-                
-                if user_message.strip():
-                    # Handle translation and process message
+                # Handle text messages
+                if "text" in messaging_event["message"]:
+                    user_message = messaging_event["message"]["text"]
                     response_text = await process_multilingual_message(sender_id, user_message)
                     send_message(sender_id, response_text)
 
-    if len(processed_messages) % 100 == 0:
-        periodic_cleanup()
+                # Handle voice messages
+                elif "attachments" in messaging_event["message"]:
+                    for attachment in messaging_event["message"]["attachments"]:
+                        if attachment["type"] == "audio":
+                            audio_url = attachment["payload"]["url"]
+                            response_text = await handle_voice_message(sender_id, audio_url)
+                            send_message(sender_id, response_text)
 
     return JSONResponse(content={"status": "ok"})
 
 
+async def handle_voice_message(sender_id: str, audio_url: str) -> str:
+    """Handle voice messages by downloading, transcribing, and processing."""
+    try:
+        # Step 1: Download the audio file
+        async with aiohttp.ClientSession() as session:
+            async with session.get(audio_url) as response:
+                if response.status != 200:
+                    raise Exception("Failed to download audio file")
+                audio_data = await response.read()
+
+        # Save the audio file temporarily
+        audio_file_path = f"temp_audio_{sender_id}.mp3"
+        with open(audio_file_path, "wb") as audio_file:
+            audio_file.write(audio_data)
+
+        # Step 2: Transcribe the audio using OpenAI Whisper API
+        transcription = await transcribe_audio(audio_file_path)
+
+        # Step 3: Translate the transcribed text to English
+        detected_language = translation_service.detect_language_smart(
+            transcription, sender_id, get_user_last_language
+        )
+        if detected_language != "en":
+            transcription = translation_service.translate_to_english(transcription, detected_language)
+
+        # Step 4: Process the transcribed text
+        response_text = await process_multilingual_message(sender_id, transcription)
+
+        # Clean up the temporary audio file
+        os.remove(audio_file_path)
+
+        return response_text
+
+    except Exception as e:
+        logger.error(f"Error handling voice message: {e}")
+        return "Sorry, I couldn't process your voice message. Please try again."
 
 
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]) 
+
+async def transcribe_audio(audio_file_path: str) -> str:
+    """Transcribe audio using OpenAI's new SDK (>=1.0.0)"""
+    try:
+        with open(audio_file_path, "rb") as audio_file:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"  # ensures raw string instead of JSON
+            )
+        return response
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {e}")
+        raise Exception("Failed to transcribe audio")
 
 async def process_multilingual_message(sender_id: str, user_message: str) -> str:
     """Process message with language detection and translation support."""
