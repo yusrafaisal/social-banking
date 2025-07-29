@@ -131,7 +131,19 @@ def _json_fix(raw: str) -> str:
     fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', fixed)
     return fixed
 
-def extract_json_from_response(self, raw: str) -> Optional[Any]:
+
+class BankingAIAgent:
+    def __init__(self, mongodb_uri: str = "mongodb://localhost:27017/", db_name: str = "bank_database"):
+        """Initialize the Banking AI Agent with MongoDB connection."""
+        self.client = MongoClient(mongodb_uri)
+        self.db = self.client[db_name]
+        self.collection = self.db["transactions"]
+        self.backend_url = "http://localhost:8000"
+        # Use LangChain memory directly without ConversationChain
+        self.user_memories: Dict[str, ConversationBufferMemory] = {}
+        self.llm = llm  # Make the global llm accessible as instance attribute
+
+    def extract_json_from_response(self, raw: str) -> Optional[Any]:
         """Extract the first JSON value from an LLM reply."""
         try:
             start, end = _find_json_span(raw)
@@ -152,18 +164,8 @@ def extract_json_from_response(self, raw: str) -> Optional[Any]:
             logger.error({"action": "extract_json_parse_fail", "error": str(e), "candidate": candidate[:200]})
             return None
 
-class BankingAIAgent:
-    def __init__(self, mongodb_uri: str = "mongodb://localhost:27017/", db_name: str = "bank_database"):
-        """Initialize the Banking AI Agent with MongoDB connection."""
-        self.client = MongoClient(mongodb_uri)
-        self.db = self.client[db_name]
-        self.collection = self.db["transactions"]
-        self.backend_url = "http://localhost:8000"
-        # Use LangChain memory directly without ConversationChain
-        self.user_memories: Dict[str, ConversationBufferMemory] = {}
-        self.llm = llm  # Make the global llm accessible as instance attribute
-
         
+    # === MEMORY MANAGEMENT METHODS ===
     def get_user_memory(self, account_number: str) -> ConversationBufferMemory:
         """Get or create conversation memory for a user account."""
         if account_number not in self.user_memories:
@@ -192,8 +194,8 @@ class BankingAIAgent:
             content = msg.content
             
             # Keep more content for better context but limit extremely long responses
-            if len(content) > 300:
-                content = content[:300] + "..."
+            if len(content) > 500:
+                content = content[:500] + "..."
             
             context_lines.append(f"{speaker}: {content}")
         
@@ -203,11 +205,11 @@ class BankingAIAgent:
         if len(full_context) > 5000:
             try:
                 summary_prompt = f"""
-        Summarize this banking conversation context in 2-3 sentences, preserving key banking data:
+        Summarize this banking conversation context in 5-6 sentences, preserving key banking data:
 
         {full_context}
 
-        Focus on: transaction amounts, spending categories, timeframes, and any specific data shown to the user.
+        Focus on: transaction amounts, spending categories, timeframes, specific entities and any other important data shown to the user.
         """
                 response = llm.invoke([SystemMessage(content=summary_prompt)])
                 return response.content.strip()
@@ -215,6 +217,70 @@ class BankingAIAgent:
                 return full_context[:5000] + "..."
         
         return full_context
+
+    def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
+        """Convert contextual queries into standalone queries using conversation history."""
+        try:
+            if not conversation_history or len(conversation_history.strip()) < 10:
+                return user_message  # No context to work with
+            
+            contextual_resolution_prompt = f"""
+            You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
+
+            CONVERSATION HISTORY:
+            {conversation_history}
+
+            CURRENT CONTEXTUAL QUERY: "{user_message}"
+
+            Your task: If the current query is contextual (refers to previous data), create a standalone query that includes all necessary context.
+
+            EXAMPLES:
+
+            History: "Here are your last 4 transactions: 1. Hamza transfer $35, 2. Grocery Store $77.23, 3. Car Loan $350.69, 4. Withdrawal $117.19"
+            Query: "which one is most expensive" 
+            → "show me the most expensive transaction from my recent transaction history"
+
+            History: "You spent $77.23 at Grocery Store on June 29"
+            Query: "mujhey inka total kite batao in usd"
+            → "what is my total spending amount in USD"
+
+            History: "Your June spending: Food $100, Travel $200, Shopping $150"
+            Query: "food ka kitna tha"
+            → "how much did I spend on food in June"
+
+            History: "Your balance is $4023.90"
+            Query: "kya main 5000 afford kar sakta hun"
+            → "can I afford $5000 based on my current balance"
+
+            History: "Your last 4 transactions: Foodpanda $14.01, Grocery Store $53.44, Car Loan $350.69, Withdrawal $117.19"
+            Query: "mujhey inka total kite batao in usd"
+            → "what is the total amount of my recent transactions in USD"
+
+            RULES:
+            1. If the query is already standalone (contains complete context), return it unchanged
+            2. If the query references previous data ("which one", "inka total", "that transaction"), resolve it with context
+            3. Preserve the user's intent while making it standalone
+            4. Convert to English if needed for processing
+            5. Include relevant timeframes, amounts, or categories from history
+
+            RESOLVED STANDALONE QUERY:
+            """
+            
+            response = llm.invoke([SystemMessage(content=contextual_resolution_prompt)])
+            resolved_query = response.content.strip()
+            
+            # Remove any quotes or extra formatting
+            if resolved_query.startswith('"') and resolved_query.endswith('"'):
+                resolved_query = resolved_query[1:-1]
+            
+            logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
+            return resolved_query
+            
+        except Exception as e:
+            logger.error(f"Error in contextual query resolution: {e}")
+            return user_message  # Return original query if resolution fails
+
+
 
     # === SESSION MANAGEMENT METHODS ===
     async def handle_session_start(self, first_name: str = "", last_name: str = "") -> str:
@@ -570,7 +636,7 @@ class BankingAIAgent:
                 # NEW: Set appropriate context state for balance queries
                 if is_balance_query:
                     context_state = "User requested filtered balance information, providing balance data from pipeline results"
-                    conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+                    conversation_history = self._get_context_summary(memory.chat_memory.messages)
                     return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
                 else:
                     # Use contextual banking response for other queries
@@ -599,7 +665,7 @@ class BankingAIAgent:
             return response
 
         # Get conversation history for context
-        conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+        conversation_history = self._get_context_summary(memory.chat_memory.messages)
         
         # Handle greetings and simple queries
         if self._is_simple_greeting_or_general(user_message):
@@ -1180,7 +1246,7 @@ class BankingAIAgent:
     async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
         """Generate banking responses that are highly contextual and reference conversation history."""
         
-        conversation_history = self._get_enhanced_context_summary(memory.chat_memory.messages)
+        conversation_history = self._get_context_summary(memory.chat_memory.messages)
         
         # Enhanced banking context prompt
         banking_context_prompt = f"""You are Sage in an ongoing banking conversation with {first_name}. Generate a response that feels natural and references your conversation history.
@@ -1238,69 +1304,7 @@ class BankingAIAgent:
         logger.info(f"Bypassing context-aware filter for query: '{user_message}'")
         return False  # Always allow the query
 
-    def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
-        """Convert contextual queries into standalone queries using conversation history."""
-        try:
-            if not conversation_history or len(conversation_history.strip()) < 10:
-                return user_message  # No context to work with
-            
-            contextual_resolution_prompt = f"""
-            You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
-
-            CONVERSATION HISTORY:
-            {conversation_history}
-
-            CURRENT CONTEXTUAL QUERY: "{user_message}"
-
-            Your task: If the current query is contextual (refers to previous data), create a standalone query that includes all necessary context.
-
-            EXAMPLES:
-
-            History: "Here are your last 4 transactions: 1. Hamza transfer $35, 2. Grocery Store $77.23, 3. Car Loan $350.69, 4. Withdrawal $117.19"
-            Query: "which one is most expensive" 
-            → "show me the most expensive transaction from my recent transaction history"
-
-            History: "You spent $77.23 at Grocery Store on June 29"
-            Query: "mujhey inka total kite batao in usd"
-            → "what is my total spending amount in USD"
-
-            History: "Your June spending: Food $100, Travel $200, Shopping $150"
-            Query: "food ka kitna tha"
-            → "how much did I spend on food in June"
-
-            History: "Your balance is $4023.90"
-            Query: "kya main 5000 afford kar sakta hun"
-            → "can I afford $5000 based on my current balance"
-
-            History: "Your last 4 transactions: Foodpanda $14.01, Grocery Store $53.44, Car Loan $350.69, Withdrawal $117.19"
-            Query: "mujhey inka total kite batao in usd"
-            → "what is the total amount of my recent transactions in USD"
-
-            RULES:
-            1. If the query is already standalone (contains complete context), return it unchanged
-            2. If the query references previous data ("which one", "inka total", "that transaction"), resolve it with context
-            3. Preserve the user's intent while making it standalone
-            4. Convert to English if needed for processing
-            5. Include relevant timeframes, amounts, or categories from history
-
-            RESOLVED STANDALONE QUERY:
-            """
-            
-            response = llm.invoke([SystemMessage(content=contextual_resolution_prompt)])
-            resolved_query = response.content.strip()
-            
-            # Remove any quotes or extra formatting
-            if resolved_query.startswith('"') and resolved_query.endswith('"'):
-                resolved_query = resolved_query[1:-1]
-            
-            logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
-            return resolved_query
-            
-        except Exception as e:
-            logger.error(f"Error in contextual query resolution: {e}")
-            return user_message  # Return original query if resolution fails
-
-
+    
     async def handle_non_banking_query(self, user_message: str, first_name: str) -> str:
         """Handle clearly non-banking related queries with polite decline."""
         try:
