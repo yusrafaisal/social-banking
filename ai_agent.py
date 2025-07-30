@@ -1557,7 +1557,7 @@ class BankingAIAgent:
             
                     
     def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
-        """Enhanced non-banking detection requiring ALL tiers to agree before blocking."""
+        """Enhanced non-banking detection with proper blocking logic."""
         try:
             # CRITICAL: Never block banking credentials
             if re.match(r'^\d{5}-\d{7}-\d{1}$', user_message.strip()):
@@ -1598,30 +1598,27 @@ class BankingAIAgent:
                     logger.info(f"✅ TIER 2 ALLOWED: Banking assistant feature - '{user_message}'")
                     return False
 
-            # TIER 3: KEYWORD-BASED ANALYSIS - Check for clearly non-banking topics
+            # TIER 3: KEYWORD-BASED BLOCKING - Check for clearly non-banking topics
             tier3_result = self._tier3_keyword_analysis(user_message, user_lower)
             
-            # TIER 4: LLM-BASED ANALYSIS - Use AI to analyze unclear cases
+            # TIER 4: LLM-BASED BLOCKING - Use AI to analyze unclear cases
             tier4_result = self._tier4_llm_analysis(user_message, conversation_history) if len(user_message.strip()) > 10 else False
             
-            # CONSENSUS DECISION: Both keyword analysis AND LLM must agree to block
-            if tier3_result and tier4_result:
-                logger.info(f"🚫 CONSENSUS BLOCK: Both keyword analysis and LLM agreed to block - '{user_message}'")
+            # CHANGED: Use OR logic instead of AND logic for blocking
+            # If EITHER tier wants to block, then block it
+            if tier3_result or tier4_result:
+                logger.info(f"🚫 NON-BANKING QUERY BLOCKED: Tier3={tier3_result}, Tier4={tier4_result} - '{user_message}'")
                 return True
-            elif tier3_result and not tier4_result:
-                logger.info(f"⚠️ TIER 3 wanted to block but TIER 4 (LLM) allowed - '{user_message}'")
-                return False
-            elif not tier3_result and tier4_result:
-                logger.info(f"⚠️ TIER 4 (LLM) wanted to block but TIER 3 allowed - '{user_message}'")
-                return False
             else:
-                logger.info(f"✅ CONSENSUS ALLOW: Both tiers agreed to allow - '{user_message}'")
+                logger.info(f"✅ BANKING QUERY ALLOWED: Both tiers agreed to allow - '{user_message}'")
                 return False
-                
+                    
         except Exception as e:
             logger.error(f"Error in non-banking detection: {e}")
             # Safe fallback - allow if error (better for banking users)
             return False
+
+
 
     def _tier3_keyword_analysis(self, user_message: str, user_lower: str) -> bool:
         """Tier 3: Keyword-based analysis for clearly non-banking topics."""
@@ -1633,12 +1630,13 @@ class BankingAIAgent:
                 "algorithm", "machine learning", "data science", "javascript", "html",
                 
                 # General knowledge
-                "ceo", "apple", "google", "microsoft", "amazon", "facebook", "tesla",
+                "president", "ceo", "apple", "google", "microsoft", "amazon", "facebook", "tesla",
                 "steve jobs", "bill gates", "elon musk", "mark zuckerberg",
                 
                 # Entertainment
                 "weather", "sports", "movie", "celebrity", "politics", "news",
                 "music", "song", "album", "actor", "actress", "film", "tv show",
+                "joke", "sing", "entertainment",
                 
                 # Health/Lifestyle
                 "health", "doctor", "medicine", "recipe", "cook", "food recipe",
@@ -1660,7 +1658,8 @@ class BankingAIAgent:
             # Check if it's asking about companies in non-financial context
             company_context_phrases = [
                 "who is ceo", "who founded", "when was founded", "headquarters of",
-                "what does company do", "company history", "company products"
+                "what does company do", "company history", "company products",
+                "who is president", "who is the president"
             ]
             
             if any(phrase in user_lower for phrase in company_context_phrases):
@@ -1670,7 +1669,8 @@ class BankingAIAgent:
             # Check for general knowledge patterns
             general_knowledge_patterns = [
                 "what is the capital of", "who invented", "when did", "where is",
-                "how to make", "recipe for", "weather in", "temperature in"
+                "how to make", "recipe for", "weather in", "temperature in",
+                "tell me about", "what do you know about"
             ]
             
             if any(pattern in user_lower for pattern in general_knowledge_patterns):
@@ -1685,53 +1685,41 @@ class BankingAIAgent:
             return False
 
     def _tier4_llm_analysis(self, user_message: str, conversation_history: str) -> bool:
-        """Tier 4: LLM-based analysis for nuanced understanding."""
+        """Tier 4: LLM-based analysis with stricter blocking."""
         try:
             enhanced_llm_prompt = f"""
-            You are a banking query analyzer with STRICT instructions. You're the final decision maker for blocking non-banking queries.
+            You are a banking query analyzer. Determine if this query is clearly non-banking and should be blocked.
 
             CONVERSATION CONTEXT:
             {conversation_history[-500:] if conversation_history else "No context"}
 
             USER MESSAGE: "{user_message}"
 
-            ANALYSIS FRAMEWORK:
-
             **DEFINITELY ALLOW (return "ALLOW"):**
-            ✅ Account operations: balance inquiry, transactions inquiry, transfer money, payments
-            ✅ Financial analysis: spending analysis, category breakdown, budgeting
-            ✅ Banking calculations: currency conversion of banking amounts, financial planning
-            ✅ Account management: statements, history, account details
-            ✅ Banking assistance: "convert my balance to USD", "what's $100 in PKR"
-            ✅ Language support: "translate to Urdu", "respond in Arabic"
+            ✅ Account operations: balance, transactions, transfer, payments, spending analysis
+            ✅ Financial calculations: currency conversion of amounts, budgeting
+            ✅ Banking assistance: "what can you do", general banking help
+            ✅ Language support: translation requests for banking responses
 
             **DEFINITELY BLOCK (return "BLOCK"):**
-            ❌ Pure general knowledge: "Who is CEO of Apple", "Weather today", "Sports scores"
-            ❌ Entertainment: "Recommend movies", "Play music", "Tell jokes", "Sing songs"
-            ❌ Technology help: "How to program", "Fix computer", "Install software"
-            ❌ Personal advice: "Health tips", "Dating advice", "Career guidance"
-            ❌ Academic help: "Solve homework", "Write essay", "Research topics"
-            ❌ Company information (non-financial): "Apple's products", "Google's history"
-
-            **BORDERLINE CASES - LEAN TOWARDS ALLOW:**
-            ⚖️ If there's ANY possibility it relates to banking, choose ALLOW
-            ⚖️ Currency questions without context → ALLOW (might be banking related)
-            ⚖️ Translation requests → ALLOW (might be for banking responses)
-            ⚖️ Vague questions → ALLOW (better safe than sorry in banking)
+            ❌ General knowledge: "Who is president", "Weather today", "Sports scores"
+            ❌ Entertainment: "Tell jokes", "Sing songs", "Recommend movies"
+            ❌ Technology help: "How to program", "Fix computer"
+            ❌ Personal advice: "Health tips", "Dating advice"
+            ❌ Academic help: "Solve homework", "Write essay"
+            ❌ Company info (non-financial): "Apple's history", "Google's products"
 
             **CRITICAL DECISION RULE:**
-            - If you're 90%+ certain it's pure non-banking → "BLOCK"
-            - If there's ANY doubt or banking possibility → "ALLOW"
-            - Banking users should NOT be blocked for legitimate questions
+            - If it's clearly about general knowledge, entertainment, technology, etc. → "BLOCK"
+            - If it's banking-related or unclear → "ALLOW"
 
             **EXAMPLES:**
-            "Who is CEO of Apple?" → BLOCK (pure general knowledge)
-            "Convert $100 to PKR" → ALLOW (banking calculation)
-            "What's the weather?" → BLOCK (completely unrelated)
-            "Can you translate to Urdu?" → ALLOW (might be for banking response)
-            "What can you do?" → ALLOW (app capabilities)
-            "Apple stock price" → BLOCK (not about user's banking)
-            "How much is 1566.08 dollars in GBP?" → ALLOW (currency conversion)
+            "Who is CEO of Apple?" → BLOCK
+            "What's the weather?" → BLOCK  
+            "Who is president of USA?" → BLOCK
+            "Convert $100 to PKR" → ALLOW
+            "What can you do?" → ALLOW
+            "How much is my balance?" → ALLOW
 
             Return ONLY "BLOCK" or "ALLOW".
             """
@@ -1754,7 +1742,7 @@ class BankingAIAgent:
             return False
 
     async def handle_non_banking_query(self, user_message: str, first_name: str) -> str:
-        """Handle clearly non-banking related queries with polite but firm decline."""
+        """Handle clearly non-banking related queries with firm but polite decline."""
         try:
             non_banking_prompt = f"""You are Sage, a strict banking assistant. The user {first_name} asked a non-banking question that you must firmly refuse to answer.
 
@@ -1762,28 +1750,31 @@ class BankingAIAgent:
 
             Response rules:
             1. Be polite but VERY firm - you ONLY handle banking account queries
-            2. Don't provide ANY information about the non-banking topic
-            3. Clearly state you cannot and will not help with non-banking topics
-            4. Redirect to ONLY banking services:
-            ✅ Account operations: balance inquiry, transactions inquiry, transfer money, payments
-            ✅ Financial analysis: spending analysis, category breakdown, budgeting
-            ✅ Banking calculations: currency conversion of banking amounts, financial planning
-            ✅ Account management: statements, history, account details
+            2. Don't provide ANY information about the non-banking topic - not even hints
+            3. Immediately redirect to banking services only
+            4. Keep response short and direct
+            5. Don't apologize excessively - be confident in your banking focus
 
-            5. Keep it short and redirect immediately
+            Banking services you offer:
+            - Check account balance and financial capacity
+            - View transaction history and spending analysis  
+            - Transfer money and make payments
+            - Currency conversion for banking amounts
+            - Financial planning and budgeting help
 
-            Generate a firm refusal that maintains strict banking boundaries."""
+            Generate a firm but polite refusal that maintains strict banking boundaries."""
             
             try:
                 response = await llm.ainvoke([SystemMessage(content=non_banking_prompt)])
                 return response.content.strip()
             except:
-                return f"I'm a banking assistant, {first_name}, and I can only help with your bank account questions like checking your balance, viewing transactions, analyzing spending, or transferring money. I cannot provide information about other topics. What banking question can I help you with?"
+                return f"I'm a banking assistant, {first_name}, and I can only help with your bank account questions like checking your balance, viewing transactions, analyzing spending, or transferring money. I don't provide information about other topics. What banking question can I help you with?"
                 
         except Exception as e:
             logger.error(f"Error in non-banking response: {e}")
-            return f"I'm sorry {first_name}, but I can only help with banking questions related to your account. I don't have access to information about other topics. What banking question can I help you with today?"
-    
+            return f"I'm a banking assistant, {first_name}, and I can only help with banking questions related to your account. What banking question can I help you with today?"
+
+
     # === FALLBACK METHODS ===
     async def _reason_about_query(self, user_message: str, memory: ConversationBufferMemory, 
                             account_number: str, first_name: str) -> Dict[str, Any]:

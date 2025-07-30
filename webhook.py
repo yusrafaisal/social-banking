@@ -807,6 +807,19 @@ async def handle_banking_queries(sender_id: str, user_message: str) -> str:
     account_number = user_info[DatabaseFields.ACCOUNT_NUMBER]
     first_name = user_info[DatabaseFields.NAME].split()[0]
     
+    # EARLY NON-BANKING FILTER - Check before processing
+    try:
+        if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):
+            logger.info({
+                "action": "non_banking_query_blocked_at_webhook",
+                "sender_id": sender_id,
+                "blocked_query": user_message.strip()
+            })
+            return await ai_agent.handle_non_banking_query(user_message.strip(), first_name)
+    except Exception as filter_error:
+        logger.error(f"Non-banking filter error: {filter_error}")
+        # Continue processing if filter fails
+    
     try:
         logger.info({
             "action": "processing_banking_query",
@@ -870,7 +883,8 @@ async def handle_banking_queries(sender_id: str, user_message: str) -> str:
             "user_message": user_message
         })
         return await ai_agent.handle_error_gracefully(e, user_message, first_name, "banking_query")
-
+    
+    
 async def handle_transfer_otp_verification(sender_id: str, user_message: str) -> str:
     """Handle OTP verification for money transfer - now leads to confirmation step."""
     
