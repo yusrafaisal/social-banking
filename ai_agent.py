@@ -234,7 +234,11 @@ class BankingAIAgent:
         """Convert contextual queries into standalone queries using conversation history."""
         try:
             if not conversation_history or len(conversation_history.strip()) < 10:
+                logger.info(f"🔧 CONTEXTUAL: No sufficient history for: '{user_message}'")
                 return user_message  # No context to work with
+            
+            # Log the conversation history being used
+            logger.info(f"🔧 CONTEXTUAL INPUT: Message='{user_message}', History='{conversation_history[:200]}...'")
             
             contextual_resolution_prompt = f"""
             You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
@@ -300,13 +304,20 @@ class BankingAIAgent:
             if resolved_query.startswith('"') and resolved_query.endswith('"'):
                 resolved_query = resolved_query[1:-1]
             
+            # Enhanced logging (ADDED)
+            if resolved_query != user_message:
+                logger.info(f"🔧 CONTEXTUAL SUCCESS: '{user_message}' → '{resolved_query}'")
+            else:
+                logger.info(f"🔧 CONTEXTUAL: No resolution needed for '{user_message}'")
+            
+            # Keep original logging line too
             logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
             return resolved_query
             
         except Exception as e:
-            logger.error(f"Error in contextual query resolution: {e}")
+            logger.error(f"🔧 CONTEXTUAL ERROR: {e} for message '{user_message}'")  # Enhanced
+            logger.error(f"Error in contextual query resolution: {e}")  # Original
             return user_message  # Return original query if resolution fails
-
 
 
     async def detect_exit_intent_with_llm(self, user_message: str) -> bool:
@@ -718,6 +729,8 @@ class BankingAIAgent:
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
             return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
 
+   
+
     async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
         """Enhanced process query with contextual awareness (exit detection handled at webhook level)."""
         memory = self.get_user_memory(account_number)
@@ -733,11 +746,21 @@ class BankingAIAgent:
         # Get conversation history for context
         conversation_history = self._get_context_summary(memory.chat_memory.messages)
 
-        # FIRST: Check for non-banking queries BEFORE any processing
-        if self.is_clearly_non_banking_query(user_message, conversation_history):
-            logger.info(f"🚫 STRICT filter blocked non-banking query: {user_message}")
-            response = await self.handle_non_banking_query(user_message, first_name)
-            memory.chat_memory.add_user_message(user_message)
+        # CRITICAL FIX: Resolve contextual queries FIRST, before non-banking detection
+        original_message = user_message
+        resolved_query = self.resolve_contextual_query(user_message, conversation_history)
+        
+        if resolved_query != original_message:
+            logger.info(f"🔧 CONTEXTUAL RESOLUTION: '{original_message}' → '{resolved_query}'")
+            processing_message = resolved_query
+        else:
+            processing_message = user_message
+
+        # NOW check for non-banking queries using the RESOLVED query
+        if self.is_clearly_non_banking_query(processing_message, conversation_history):
+            logger.info(f"🚫 STRICT filter blocked non-banking query: {processing_message} (original: {original_message})")
+            response = await self.handle_non_banking_query(original_message, first_name)
+            memory.chat_memory.add_user_message(original_message)
             memory.chat_memory.add_ai_message(response)
             return response
 
@@ -753,16 +776,6 @@ class BankingAIAgent:
         if self.detect_currency_conversion_intent(user_message, conversation_history):
             logger.info(f"Currency conversion intent detected for: {user_message}")
             return await self.handle_currency_conversion(user_message, conversation_history, first_name, memory)
-
-        # Resolve contextual queries into standalone queries
-        original_message = user_message
-        resolved_query = self.resolve_contextual_query(user_message, conversation_history)
-        
-        if resolved_query != original_message:
-            logger.info(f"Using resolved query for processing: '{resolved_query}'")
-            processing_message = resolved_query
-        else:
-            processing_message = user_message
 
         # PRIMARY PATH: LLM-FIRST APPROACH with resolved query
         try:
@@ -857,7 +870,7 @@ class BankingAIAgent:
                 memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
-
+                
     # === HANDLE MONEY TRANSFERS ===
     async def handle_transfer_otp_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
         """Handle OTP request for money transfer."""
@@ -1561,60 +1574,60 @@ class BankingAIAgent:
                 return False
                 
             non_banking_detection_prompt = f"""
-            You are a STRICT banking query filter. Your job is to BLOCK any query that is NOT directly related to banking operations.
+                You are a STRICT banking query filter. Your job is to BLOCK any query that is NOT directly related to banking operations.
 
-            User message: "{user_message}"
-            Conversation history: {conversation_history[:200]}...
+                User message: "{user_message}"
+                Recent conversation history: {conversation_history[:1500]}
 
-            CONTEXT-AWARE ANALYSIS:
-            - Check if recent conversation mentions transfers, amounts, or banking operations
-            - If recent context shows transfer in progress, allow recipient names and transfer-related follow-ups
-            - If recent context shows balance inquiry, allow transfer requests referring to "that amount"
+                CONTEXT-AWARE ANALYSIS:
+                - Check if recent conversation mentions transfers, amounts, or banking operations
+                - If recent context shows transfer in progress, allow recipient names and transfer-related follow-ups
+                - If recent context shows balance inquiry, allow transfer requests referring to "that amount"
 
-            ALLOWED BANKING QUERIES ONLY:
-            - Account balance checks ("balance", "current balance", "how much money")
-            - Transaction history and details
-            - Money transfers and payments (including recipient names in transfer context)
-            - Spending analysis and budgets
-            - Currency conversions of banking amounts
-            - Account management questions
-            - CNIC verification requests (format: 12345-1234567-1)
-            - Banking authentication steps (OTPs, account numbers)
-            - Account numbers, CNIC numbers, banking credentials
-            - Follow-up messages in banking context (recipient names after transfer requests)
+                ALLOWED BANKING QUERIES ONLY:
+                - Account balance checks ("balance", "current balance", "how much money")
+                - Transaction history and details
+                - Money transfers and payments (including recipient names in transfer context)
+                - Spending analysis and budgets
+                - Currency conversions of banking amounts
+                - Account management questions
+                - CNIC verification requests (format: 12345-1234567-1)
+                - Banking authentication steps (OTPs, account numbers)
+                - Account numbers, CNIC numbers, banking credentials
+                - Follow-up messages in banking context (recipient names after transfer requests)
 
-            SPECIAL TRANSFER CONTEXT RULES:
-            - If conversation history mentions "transfer", "send money", or percentages → allow recipient names
-            - If history shows balance inquiry → allow "transfer X% of that"  
-            - If history shows incomplete transfer → allow "to [person name]"
-            - Names like "ahmed", "john", "sarah" are ALLOWED if recent context is about transfers
+                SPECIAL TRANSFER CONTEXT RULES:
+                - If conversation history mentions "transfer", "send money", or percentages → allow recipient names
+                - If history shows balance inquiry → allow "transfer X% of that"  
+                - If history shows incomplete transfer → allow "to [person name]"
+                - Names like "ahmed", "john", "sarah" are ALLOWED if recent context is about transfers
 
-            BLOCK EVERYTHING ELSE (return "YES" to block):
-            - Entertainment: "Netflix movies", "TV shows", "music recommendations"
-            - Job applications: "I want a job at Amazon"
-            - General knowledge: "Who is the CEO of Apple", "What is the price of X"
-            - Weather, sports, entertainment: "Weather today", "Football scores"
-            - Technology: "How does AI work", "What is Python"
-            - Shopping: "Where to buy X", "Price of Y"
-            - Health/Medical advice
-            - Travel information
-            - News and current events
-            - Personal relationships (unless in transfer context)
-            - Education questions
-            - Cooking/recipes
-            - Movie/TV recommendations
-            - ANY topic not directly about the user's bank account
+                BLOCK EVERYTHING ELSE (return "YES" to block):
+                - Entertainment: "Netflix movies", "TV shows", "music recommendations"
+                - Job applications: "I want a job at Amazon"
+                - General knowledge: "Who is the CEO of Apple", "What is the price of X"
+                - Weather, sports, entertainment: "Weather today", "Football scores"
+                - Technology: "How does AI work", "What is Python"
+                - Shopping: "Where to buy X", "Price of Y"
+                - Health/Medical advice
+                - Travel information
+                - News and current events
+                - Personal relationships (unless in transfer context)
+                - Education questions
+                - Cooking/recipes
+                - Movie/TV recommendations
+                - ANY topic not directly about the user's bank account
 
-            CRITICAL RULES:
-            1. If recent conversation history contains transfer/balance context → be MORE LENIENT for follow-ups
-            2. NEVER block CNIC numbers (format: 12345-1234567-1) - these are banking credentials
-            3. NEVER block account numbers, OTPs, or banking authentication data
-            4. In transfer context, allow recipient names and amounts
-            5. When in doubt about banking vs non-banking in transfer context, ALLOW (return "NO")
-            6. Check last 2-3 conversation turns for banking context before blocking
+                CRITICAL RULES:
+                1. If recent conversation history contains transfer/balance context → be MORE LENIENT for follow-ups
+                2. NEVER block CNIC numbers (format: 12345-1234567-1) - these are banking credentials
+                3. NEVER block account numbers, OTPs, or banking authentication data
+                4. In transfer context, allow recipient names and amounts
+                5. When in doubt about banking vs non-banking in transfer context, ALLOW (return "NO")
+                6. Check last 2-3 conversation turns for banking context before blocking
 
-            Return "YES" to BLOCK non-banking queries, "NO" for genuine banking queries and banking follow-ups.
-            """
+                Return "YES" to BLOCK non-banking queries, "NO" for genuine banking queries and banking follow-ups.
+                """
 
 
             response = self.llm.invoke([SystemMessage(content=non_banking_detection_prompt)])

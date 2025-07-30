@@ -45,7 +45,6 @@ VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
 
 PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPAP0Nhv5ZBWpiL6hboNQXrbnp1NKardW6jeCyJbXVKNR0MCooUu0H7xaINNxHLsgM6ZAddqPHTp7J17Kjl9AjqZAZB0xlyNLIIsA9q3VVtCIva0MZA3OQKKUZAZBP4qZBZBfVMr3KID33fAmI7aS4FUxDUczo6HrSW1MbOmoyIw3F2yEAITdwMTt6yYZCw"
 
-# Add this after your other global variables (around line 40-50, after BACKEND_URL)
 BACKEND_URL = WebhookConfig.BACKEND_URL
 
 # Initialize AI Agent for natural responses
