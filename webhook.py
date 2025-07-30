@@ -808,6 +808,18 @@ async def handle_banking_queries(sender_id: str, user_message: str) -> str:
     account_number = user_info[DatabaseFields.ACCOUNT_NUMBER]
     first_name = user_info[DatabaseFields.NAME].split()[0]
     
+
+    # Check for cancel intent during banking queries - NEW FIX
+    if await ai_agent.detect_cancel_transfer_intent_with_llm(user_message):
+        logger.info({
+            "action": "transfer_cancelled_during_banking_query",
+            "sender_id": sender_id,
+            "user_message": user_message,
+            "detection_method": "llm_based"
+        })
+        return await ai_agent.handle_transfer_cancellation_during_process(first_name, "transfer request")
+    
+
     # EARLY NON-BANKING FILTER - Check before processing
     try:
         if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):

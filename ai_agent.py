@@ -891,8 +891,8 @@ class BankingAIAgent:
             return self._generate_fallback_pipeline(filters, intent, account_number)
 
     async def _execute_llm_pipeline(self, account_number: str, pipeline: List[Dict[str, Any]], 
-                              user_message: str, first_name: str, memory: ConversationBufferMemory, 
-                              intent: str, is_balance_query: bool = False) -> str:
+                          user_message: str, first_name: str, memory: ConversationBufferMemory, 
+                          intent: str, is_balance_query: bool = False) -> str:
         """Execute LLM-generated pipeline and format response naturally."""
         try:
             async with httpx.AsyncClient() as client:
@@ -907,7 +907,13 @@ class BankingAIAgent:
                 if is_balance_query:
                     context_state = ContextStates.BALANCE_INQUIRY
                     conversation_history = self._get_context_summary(memory.chat_memory.messages)
-                    return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
+                    response_text = await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
+                    
+                    # ADD THIS: Update memory for balance queries - CRITICAL FIX
+                    memory.chat_memory.add_user_message(user_message)
+                    memory.chat_memory.add_ai_message(response_text)
+                    
+                    return response_text
                 else:
                     # Use contextual banking response for other queries
                     return await self.generate_contextual_banking_response(data, user_message, first_name, memory, intent) 
@@ -916,7 +922,16 @@ class BankingAIAgent:
             logger.error(f"Error executing LLM pipeline: {e}")
             context_state = ContextStates.ERROR_OCCURRED
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
-            return await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
+            
+            # ADD THIS: Update memory for errors too
+            response_text = await self.generate_natural_response(context_state, {"error": str(e)}, user_message, first_name, conversation_history)
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(response_text)
+            
+            return response_text
+
+
+
 
     async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
         """Enhanced process query with contextual awareness (exit detection handled at webhook level)."""
@@ -1061,6 +1076,30 @@ class BankingAIAgent:
                 memory.chat_memory.add_user_message(original_message)
                 memory.chat_memory.add_ai_message(response)
                 return response
+
+
+
+
+    async def handle_transfer_cancellation_during_process(self, first_name: str, stage: str) -> str:
+        """Handle transfer cancellation during the transfer process (OTP or confirmation stage)."""
+        try:
+            context_state = f"User cancelled transfer during {stage} stage, providing cancellation confirmation and returning to normal banking"
+            data = {
+                "transfer_cancelled": True,
+                "cancellation_stage": stage,
+                "account_secure": True,
+                "ready_for_new_requests": True,
+                "user_initiated_cancellation": True
+            }
+            
+            return await self.generate_natural_response(context_state, data, f"cancel transfer during {stage}", first_name)
+            
+        except Exception as e:
+            logger.error(f"Error in transfer cancellation during process: {e}")
+            return f"Transfer cancelled, {first_name}. You're back to your main banking menu. What can I help you with?"
+
+
+
 
     # === HANDLE MONEY TRANSFERS ===
     async def handle_transfer_otp_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
