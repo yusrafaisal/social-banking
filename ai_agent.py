@@ -502,7 +502,53 @@ class BankingAIAgent:
             
             return is_exit
     
+    async def detect_cancel_transfer_intent_with_llm(self, user_message: str) -> bool:
+        """Use LLM to detect if user wants to cancel the current transfer process."""
+        try:
+            cancel_detection_prompt = f"""
+            You are analyzing if a user wants to cancel their current money transfer process.
 
+            User message: "{user_message}"
+
+            Cancel Transfer Intent Indicators:
+            - Direct commands: "cancel", "cancel transfer", "cancel transaction", "stop", "abort"
+            - Natural phrases: "leave this", "forget it", "never mind", "don't want to", "changed my mind"
+            - Contextual: "go back", "exit transfer", "stop transfer", "cancel this process"
+            - Polite: "please cancel", "can you cancel", "I don't want to proceed"
+
+            NOT Cancel Intent:
+            - Banking queries: "cancel my card", "cancel subscription" (different context)
+            - Asking questions: "how do I cancel?", "what happens if I cancel?"
+            - Transfer details: "cancel the Netflix payment" (referring to other transactions)
+
+            Rules:
+            1. If the message contains clear intent to stop/cancel the CURRENT transfer process → return "YES"
+            2. If it's asking about other cancellations or just questions → return "NO"
+            3. When in doubt about transfer cancellation, lean towards "YES" for user safety
+
+            Return ONLY "YES" or "NO".
+            """
+
+            response = await self.llm.ainvoke([SystemMessage(content=cancel_detection_prompt)])
+            result = response.content.strip().upper()
+            
+            logger.info(f"Cancel transfer intent detection: '{user_message}' → {result}")
+            
+            return result == "YES"
+            
+        except Exception as e:
+            logger.error(f"Error in LLM cancel transfer detection: {e}")
+            # Safe fallback - check for obvious cancel words
+            cancel_words = ["cancel", "stop", "abort", "leave this", "forget it", "never mind"]
+            user_lower = user_message.strip().lower()
+            
+            for word in cancel_words:
+                if word in user_lower:
+                    logger.info(f"Fallback cancel detection: '{user_message}' matched '{word}'")
+                    return True
+            
+            return False
+        
     # === SESSION MANAGEMENT METHODS ===
     async def handle_session_start(self, first_name: str = "", last_name: str = "") -> str:
         """Handle session start with natural greeting."""

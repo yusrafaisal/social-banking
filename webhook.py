@@ -44,7 +44,7 @@ app = FastAPI()
 VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
 
 
-PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
+PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPAP0Nhv5ZBWpiL6hboNQXrbnp1NKardW6jeCyJbXVKNR0MCooUu0H7xaINNxHLsgM6ZAddqPHTp7J17Kjl9AjqZAZB0xlyNLIIsA9q3VVtCIva0MZA3OQKKUZAZBP4qZBZBfVMr3KID33fAmI7aS4FUxDUczo6HrSW1MbOmoyIw3F2yEAITdwMTt6yYZCw"
 
 # Add this after your other global variables (around line 40-50, after BACKEND_URL)
 BACKEND_URL = WebhookConfig.BACKEND_URL
@@ -887,7 +887,7 @@ async def handle_banking_queries(sender_id: str, user_message: str) -> str:
     
     
 async def handle_transfer_otp_verification(sender_id: str, user_message: str) -> str:
-    """Handle OTP verification for money transfer - now leads to confirmation step."""
+    """Handle OTP verification for money transfer - now with cancel functionality."""
     
     try:
         user_data = authenticated_users.get(sender_id, {})
@@ -904,7 +904,27 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
         account_number = user_data.get("selected_account", "")
         cnic = user_data.get(DatabaseFields.CNIC, "")
 
-        
+        # CHECK FOR CANCEL INTENT FIRST - NEW FUNCTIONALITY
+        if await ai_agent.detect_cancel_transfer_intent_with_llm(user_message):
+            # User wants to cancel transfer
+            clear_pending_transfer_info(sender_id)
+            set_user_verification_stage(
+                sender_id,
+                VerificationStages.ACCOUNT_SELECTED,
+                cnic=cnic,
+                name=user_name,
+                selected_account=account_number
+            )
+            
+            logger.info({
+                "action": "transfer_cancelled_during_otp_stage",
+                "sender_id": sender_id,
+                "user_message": user_message,
+                "detection_method": "llm_based"
+            })
+            
+            return await ai_agent.handle_transfer_cancellation_during_process(first_name, "OTP verification")
+
         if not account_number:
             logger.error({
                 "action": "transfer_otp_no_account",
@@ -912,9 +932,8 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
             })
             return "Account information missing. Please restart your session."
         
-        # Check if OTP is valid
+        # Rest of the existing OTP verification logic...
         if is_valid_otp(user_message.strip()):
-            # OTP is valid, move to confirmation step instead of executing transfer
             transfer_info = get_pending_transfer_info(sender_id)
             
             if not transfer_info or not all([
@@ -933,7 +952,6 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
             currency = transfer_info["currency"]
             recipient = transfer_info["recipient"]
             
-            # Move to confirmation stage instead of executing transfer
             set_user_verification_stage(
                 sender_id,
                 VerificationStages.TRANSFER_CONFIRMATION_PENDING,
@@ -951,7 +969,6 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
                 "next_step": "transfer_confirmation"
             })
             
-            # Ask for confirmation using AI agent
             return await ai_agent.handle_transfer_confirmation_request(amount, currency, recipient, first_name)
         
         else:
@@ -972,9 +989,10 @@ async def handle_transfer_otp_verification(sender_id: str, user_message: str) ->
         })
         
         return "Sorry, there was an error processing your transfer OTP. Please try again or restart the transfer process."
-
+        
+    
 async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str:
-    """Handle transfer confirmation step - NEW FUNCTION."""
+    """Handle transfer confirmation step with cancel functionality."""
     
     try:
         user_data = authenticated_users.get(sender_id, {})
@@ -983,6 +1001,28 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
         account_number = user_data.get("selected_account", "")
         cnic = user_data.get(DatabaseFields.CNIC, "")
         
+        # CHECK FOR CANCEL INTENT FIRST - NEW FUNCTIONALITY
+        if await ai_agent.detect_cancel_transfer_intent_with_llm(user_message):
+            # User wants to cancel transfer
+            clear_pending_transfer_info(sender_id)
+            set_user_verification_stage(
+                sender_id,
+                VerificationStages.ACCOUNT_SELECTED,
+                cnic=cnic,
+                name=user_name,
+                selected_account=account_number
+            )
+            
+            logger.info({
+                "action": "transfer_cancelled_during_confirmation_stage",
+                "sender_id": sender_id,
+                "user_message": user_message,
+                "detection_method": "llm_based"
+            })
+            
+            return await ai_agent.handle_transfer_cancellation_during_process(first_name, "confirmation")
+        
+        # Rest of the existing confirmation logic stays the same...
         user_message_lower = user_message.lower().strip()
         if not any(word in user_message_lower for word in ["yes", "no", "confirm", "cancel", "ok", "sure", "proceed"]):
             if ai_agent.is_clearly_non_banking_query(user_message.strip(), ""):
@@ -1010,11 +1050,8 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
         currency = transfer_info["currency"]
         recipient = transfer_info["recipient"]
         
-        # Check user's confirmation response
         if is_confirmation_positive(user_message):
-            # User confirmed - proceed with transfer
-            
-            # Clear pending transfer info and reset to fully authenticated
+            # Existing confirmation logic...
             clear_pending_transfer_info(sender_id)
             set_user_verification_stage(
                 sender_id,
@@ -1033,7 +1070,6 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
                 "user_confirmation": user_message
             })
             
-            # Execute the transfer using AI agent
             memory = ai_agent.get_user_memory(account_number)
             response = await ai_agent.execute_verified_transfer(
                 account_number, amount, currency, recipient, first_name, memory
@@ -1042,8 +1078,7 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
             return response
             
         elif is_confirmation_negative(user_message):
-            # User cancelled - clear transfer and return to normal state
-            
+            # Existing cancellation logic...
             clear_pending_transfer_info(sender_id)
             set_user_verification_stage(
                 sender_id,
@@ -1065,7 +1100,7 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
             return await ai_agent.handle_transfer_cancellation(amount, currency, recipient, first_name)
             
         else:
-            # Unclear response - ask for clarification
+            # Unclear response logic...
             logger.info({
                 "action": "transfer_confirmation_unclear_response",
                 "sender_id": sender_id,
@@ -1083,6 +1118,7 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
         })
         
         return "Sorry, there was an error processing your confirmation. Please try again."
+        
 
 async def call_process_query_api(user_message: str, account_number: str, first_name: str) -> str:
     """Make API call to backend process_query endpoint."""
