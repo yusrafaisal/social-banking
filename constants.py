@@ -219,7 +219,7 @@ class TransferSignals:
     OTP_REQUIRED_PREFIX = "OTP_REQUIRED"
     SEPARATOR = "|"
 
-# ===== SUPPORTED LANGUAGES =====
+# # ===== SUPPORTED LANGUAGES =====
 class Languages:
     ENGLISH = "en"
     URDU_ROMAN = "ur-roman"

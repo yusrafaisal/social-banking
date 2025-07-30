@@ -75,6 +75,7 @@ class FilterExtraction(BaseModel):
     date_range: Optional[Dict[str, str]] = None
     limit: Optional[int] = None
     currency: Optional[str] = None
+    intent_hint: Optional[str] = None
 
 class QueryResult(BaseModel):
     intent: str = Field(default=BankingIntents.GENERAL)
@@ -90,12 +91,6 @@ class ContextualQuery(BaseModel):
     missing_info: List[str] = Field(default_factory=list)
     clarification_needed: Optional[str] = None
     resolved_query: Optional[str] = None
-
-
-
-
-
-
 
 # === HELPER FUNCTIONS ====
 def month_to_number(month: str) -> int:
@@ -193,120 +188,269 @@ class BankingAIAgent:
             logger.info(f"Cleared memory for account: {account_number}")
     
     def _get_context_summary(self, chat_history: List) -> str:
-        """Get an enhanced summary of recent conversation for context."""
+        """Get an enhanced summary of recent conversation with structured data extraction."""
         if not chat_history:
             return "No previous conversation."
         
-        # Get last messages for better context
-        recent_messages = chat_history[-Limits.MAX_RECENT_MESSAGES:] if len(chat_history) > Limits.MAX_RECENT_MESSAGES else chat_history
-        context_lines = []
+        # Get more messages for better context (increased from default)
+        context_window = min(len(chat_history), Limits.MAX_RECENT_MESSAGES * 2)  # Double the window
+        recent_messages = chat_history[-context_window:]
+        
+        # Separate user and assistant messages for better analysis
+        user_messages = []
+        assistant_messages = []
+        conversation_flow = []
         
         for i, msg in enumerate(recent_messages):
             speaker = "Human" if i % 2 == 0 else "Assistant"
             content = msg.content
             
-            # Keep more content for better context but limit extremely long responses
+            # Preserve important banking data in full
             if len(content) > Limits.MAX_RESPONSE_CONTENT:
-                content = content[:Limits.MAX_RESPONSE_CONTENT] + "..."
+                # Don't truncate if it contains important banking keywords
+                banking_keywords = ["balance", "transaction", "transfer", "$", "PKR", "USD", "spent", "amount"]
+                if any(keyword in content.lower() for keyword in banking_keywords):
+                    # Keep full content for banking data, but limit extremely long responses
+                    content = content[:Limits.MAX_RESPONSE_CONTENT * 2] + "..." if len(content) > Limits.MAX_RESPONSE_CONTENT * 2 else content
+                else:
+                    content = content[:Limits.MAX_RESPONSE_CONTENT] + "..."
             
-            context_lines.append(f"{speaker}: {content}")
+            conversation_flow.append(f"{speaker}: {content}")
+            
+            if speaker == "Human":
+                user_messages.append(content)
+            else:
+                assistant_messages.append(content)
         
-        full_context = "\n".join(context_lines)
+        full_context = "\n".join(conversation_flow)
         
-        # If context is very long, summarize it
+        # Enhanced summarization that preserves banking context
         if len(full_context) > Limits.MAX_CONTEXT_LENGTH:
             try:
-                summary_prompt = f"""
-        Summarize this banking conversation context in 5-6 sentences, preserving key banking data:
+                enhanced_summary_prompt = f"""
+                Create a structured summary of this banking conversation that preserves ALL important context for future queries.
 
-        {full_context}
+                CONVERSATION:
+                {full_context}
 
-        Focus on: transaction amounts, spending categories, timeframes, specific entities and any other important data shown to the user.
-        """
-                response = llm.invoke([SystemMessage(content=summary_prompt)])
+                Create a summary with these sections:
+                1. RECENT BALANCE INFO: Any balance amounts, account numbers mentioned
+                2. TRANSACTION DATA: Recent transactions shown (amounts, descriptions, dates)
+                3. SPENDING ANALYSIS: Any spending totals, categories, comparisons discussed
+                4. TRANSFER CONTEXT: Any transfer amounts, recipients, percentages mentioned
+                5. USER PATTERNS: What the user typically asks about or references
+                6. PENDING ACTIONS: Any incomplete requests or multi-step processes
+
+                Focus on preserving:
+                - Exact amounts, percentages, and calculations
+                - Specific transaction details and timeframes
+                - Any "that amount", "those transactions" references
+                - Transfer recipients and amounts
+                - Categories and spending breakdowns
+
+                Keep it detailed enough for contextual query resolution.
+                """
+                response = llm.invoke([SystemMessage(content=enhanced_summary_prompt)])
                 return response.content.strip()
-            except:
+            except Exception as e:
+                logger.error(f"Error in enhanced summarization: {e}")
                 return full_context[:Limits.MAX_CONTEXT_LENGTH] + "..."
         
         return full_context
 
     def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
-        """Convert contextual queries into standalone queries using conversation history."""
+        """Enhanced contextual query resolution with multi-turn conversation analysis."""
         try:
             if not conversation_history or len(conversation_history.strip()) < 10:
                 return user_message  # No context to work with
             
-            contextual_resolution_prompt = f"""
-            You are a query resolver. Convert contextual queries into standalone, complete queries using conversation history.
+            # Enhanced prompt with better multi-turn handling
+            enhanced_contextual_prompt = f"""
+            You are an advanced query resolver for banking conversations. Analyze the ENTIRE conversation history to resolve contextual queries that may reference information from multiple previous exchanges.
 
-            CONVERSATION HISTORY:
+            FULL CONVERSATION HISTORY:
             {conversation_history}
 
             CURRENT CONTEXTUAL QUERY: "{user_message}"
+            CRITICAL REQUIREMENT: Return ONLY the resolved standalone query - NO explanations, NO reasoning, just the final query.
 
-            Your task: If the current query is contextual (refers to previous data), create a standalone query that includes all necessary context.
+            ADVANCED RESOLUTION RULES:
 
-            EXAMPLES:
+            1. MULTI-TURN CONTEXT ANALYSIS:
+            - Look across previous messages, not just the last one
+            - Track evolving context (e.g., user asked about transactions, then spending, now asking "what about that category")
+            - Identify chains of related queries and their evolution
+            - emphasize on latest entity in case of multiple references (like if 2nd last transaction talks about july and last one talks about june, then resolve to june)
 
-            History: "Here are your last 4 transactions: 1. Hamza transfer $35, 2. Grocery Store $77.23, 3. Car Loan $350.69, 4. Withdrawal $117.19"
-            Query: "which one is most expensive" 
-            → "show me the most expensive transaction from my recent transaction history"
+            2. REFERENCE RESOLUTION PATTERNS:
 
-            History: "You spent $77.23 at Grocery Store on June 29"
-            Query: "mujhey inka total kite batao in usd"
-            → "what is my total spending amount in USD"
+            a) TRANSACTION REFERENCES:
+            - "which one" → find most recent transaction list
+            - "that transaction" → identify specific transaction mentioned
+            - "those amounts" → find all amounts in recent context
+            - "the expensive one" → find highest amount mentioned
 
-            History: "Your June spending: Food $100, Travel $200, Shopping $150"
-            Query: "food ka kitna tha"
-            → "how much did I spend on food in June"
+            b) BALANCE & TRANSFER REFERENCES:
+            - "that balance" → find most recent balance mentioned
+            - "1% of that" → calculate percentage of most recent amount
+            - "from that account" → identify account number in context
+            - "to that person" → find recipient name in conversation
 
-            History: "Your balance is $4023.90"
-            Query: "kya main 5000 afford kar sakta hun"
-            → "can I afford $5000 based on my current balance"
+            c) CATEGORY & SPENDING REFERENCES:
+            - "food spending" after showing categories → reference food category data
+            - "that month" → identify timeframe from previous discussion
+            - "those expenses" → find expense list from conversation
 
-            History: "Your last 4 transactions: Foodpanda $14.01, Grocery Store $53.44, Car Loan $350.69, Withdrawal $117.19"
-            Query: "mujhey inka total kite batao in usd"
-            → "what is the total amount of my recent transactions in USD"
+            d) CROSS-MESSAGE REFERENCES:
+            - User: "show transactions" → Assistant: [shows 5 transactions] → User: "what about june ones" 
+            - Resolve: "show me transactions for June" (combining transaction request + timeframe)
 
-            # ADD THESE NEW EXAMPLES FOR BALANCE TRANSFERS:
-            History: "Here's your current account balance: USD 1,554.41 as of July 29, 2025"
-            Query: "ok transfer 1% of that"
-            → "transfer 1% of 1554.41 USD which is 15.54 USD"
+            3. CONTEXT CHAIN EXAMPLES:
 
-            History: "Account Balance: PKR 245,600.00 As of: 29th July 2025"
-            Query: "transfer 2% of that to john"
-            → "transfer 2% of 245600 PKR which is 4912 PKR to john"
+            Message 1: "show my balance" → "Balance: $1,500"
+            Message 2: "show my spending" → "June spending: $800"  
+            Message 3: "can I afford 1000 with that" 
+            → Resolve: "can I afford $1000 based on my current balance of $1500"
 
-            History: "Your current balance is $2,341.50"
-            Query: "send 5% of that amount"
-            → "send 5% of 2341.50 USD which is 117.08 USD"
+            Message 1: "transaction history" → "Last 5 transactions: Netflix $15, Grocery $50..."
+            Message 2: "which category spent most" → "Grocery category spent $200 total"
+            Message 3: "show me more of those" 
+            → Resolve: "show me more grocery transactions from my transaction history"
 
-            RULES:
-            1. If the query is already standalone (contains complete context), return it unchanged
-            2. If the query references previous data ("which one", "inka total", "that transaction", "that balance", "that amount"), resolve it with context
-            3. Preserve the user's intent while making it standalone
-            4. Convert to English if needed for processing
-            5. Include relevant timeframes, amounts, or categories from history
-            6. For percentage calculations, calculate the actual amount and include both percentage and calculated amount
-            7. When "that" refers to a balance, extract the exact amount and calculate percentages
+            4. PERCENTAGE & CALCULATION HANDLING:
+            - Always calculate percentages when referenced
+            - Include both percentage and calculated amount
+            - Reference the original amount being calculated from
+
+            5. MULTI-LANGUAGE SUPPORT:
+            - "inka total" = "their total" 
+            - "kitna" = "how much"
+            - "usmein se" = "from those"
+            - Convert to English while preserving intent
+
+            6. INCOMPLETE TRANSFER RESOLUTION:
+            Message 1: "transfer 100" → "Need recipient"
+            Message 2: "to john"
+            → Resolve: "transfer 100 to john" (combining amount + recipient)
+
+            7. EVOLVING CONTEXT:
+            - Track how user's focus shifts (balance → transactions → specific category)
+            - Maintain context of what data was last shown
+            - Understand follow-up questions in context of previous answers
+
+            ENHANCED EXAMPLES:
+
+            History: 
+            Human: "show my transactions"
+            Assistant: "Here are your last 4 transactions: 1. Netflix $15, 2. Grocery $77, 3. Gas $45, 4. Coffee $8"
+            Human: "spending breakdown"  
+            Assistant: "Entertainment: $15, Food: $85, Transportation: $45"
+            Query: "food wala expand karo"
+            → "show me detailed breakdown of food category spending including grocery and coffee transactions"
+
+            History:
+            Human: "my balance"
+            Assistant: "Account Balance: PKR 245,600 as of July 29"
+            Human: "recent spending"
+            Assistant: "July spending: PKR 25,000 across 15 transactions"  
+            Query: "kitna bacha hai percentage mein"
+            → "what percentage of my PKR 245,600 balance remains after PKR 25,000 spending"
+
+            RESOLUTION STRATEGY:
+            1. Identify ALL relevant context from conversation history
+            2. Determine what "that", "those", "it", "them" refer to specifically
+            3. Include exact amounts, names, timeframes from context
+            4. Calculate any percentages or math operations
+            5. Preserve user's original intent and language preference
+            6. Create a complete, standalone query
 
             RESOLVED STANDALONE QUERY:
             """
             
-            response = llm.invoke([SystemMessage(content=contextual_resolution_prompt)])
+            response = llm.invoke([SystemMessage(content=enhanced_contextual_prompt)])
             resolved_query = response.content.strip()
             
             # Remove any quotes or extra formatting
             if resolved_query.startswith('"') and resolved_query.endswith('"'):
                 resolved_query = resolved_query[1:-1]
             
-            logger.info(f"Contextual query resolved: '{user_message}' → '{resolved_query}'")
+            logger.info(f"Enhanced contextual query resolved: '{user_message}' → '{resolved_query}'")
             return resolved_query
             
         except Exception as e:
-            logger.error(f"Error in contextual query resolution: {e}")
+            logger.error(f"Error in enhanced contextual query resolution: {e}")
             return user_message  # Return original query if resolution fails
 
+    def _extract_banking_entities_from_history(self, conversation_history: str) -> Dict[str, Any]:
+        """Extract banking entities and context from conversation history for better resolution."""
+        try:
+            entity_extraction_prompt = f"""
+            Extract key banking entities and context from this conversation history for contextual query resolution.
+
+            CONVERSATION HISTORY:
+            {conversation_history}
+
+            Extract and return JSON with:
+            {{
+                "balances": [
+                    {{"amount": 1500, "currency": "USD", "date": "recent", "context": "current balance"}}
+                ],
+                "transactions": [
+                    {{"description": "Netflix", "amount": 15, "type": "debit", "mentioned_when": "recent"}}
+                ],
+                "amounts_mentioned": [
+                    {{"value": 1000, "currency": "USD", "context": "affordability question"}}
+                ],
+                "recipients": ["john", "ali raza"],
+                "categories": [
+                    {{"name": "food", "amount": 85, "context": "spending breakdown"}}
+                ],
+                "timeframes": ["june", "last month", "recent"],
+                "pending_transfers": [
+                    {{"amount": 100, "recipient": "john", "status": "needs_confirmation"}}
+                ],
+                "user_focus": "last thing user was asking about",
+                "conversation_flow": "summary of how conversation evolved"
+            }}
+
+            Focus on preserving exact amounts, names, and contextual relationships.
+            """
+            
+            response = llm.invoke([SystemMessage(content=entity_extraction_prompt)])
+            entities = self.extract_json_from_response(response.content)
+            return entities if entities else {}
+            
+        except Exception as e:
+            logger.error(f"Error extracting banking entities: {e}")
+            return {}
+
+    def _resolve_with_entity_context(self, user_message: str, entities: Dict[str, Any]) -> str:
+        """Resolve query using extracted banking entities."""
+        try:
+            entity_resolution_prompt = f"""
+            Resolve this contextual query using extracted banking entities from conversation history.
+
+            USER QUERY: "{user_message}"
+            
+            AVAILABLE CONTEXT:
+            {json.dumps(entities, indent=2)}
+
+            Resolution rules:
+            1. Map references like "that", "those", "it" to specific entities
+            2. Calculate percentages using actual amounts from context
+            3. Combine incomplete information (amount + recipient, etc.)
+            4. Reference specific timeframes, categories, or transactions
+            5. Preserve user's intent while making query standalone
+
+            Return the resolved standalone query:
+            """
+            
+            response = llm.invoke([SystemMessage(content=entity_resolution_prompt)])
+            return response.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error in entity-based resolution: {e}")
+            return user_message
 
 
     async def detect_exit_intent_with_llm(self, user_message: str) -> bool:
@@ -598,6 +742,16 @@ class BankingAIAgent:
     def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
         """Detect intent using LLM for more flexible understanding."""
         try:
+
+            intent_hint = getattr(filters, 'intent_hint', None)
+            
+            if intent_hint == "transaction_list":
+                return BankingIntents.TRANSACTION_HISTORY
+            elif intent_hint == "spending_total":
+                return BankingIntents.SPENDING_ANALYSIS
+            elif intent_hint == "balance_query":
+                return BankingIntents.BALANCE_INQUIRY
+            
             response = llm.invoke([
                 SystemMessage(content=intent_prompt.format(
                     user_message=user_message,
@@ -1478,6 +1632,10 @@ class BankingAIAgent:
             - Always include currency information for balance responses
             - Reference the specific date or period requested
 
+            7. NO TRANSACTIONS OR AMOUNT IS ZERO:
+            - If there are no transactions or if total amount is equal to 0, provide a clear message like "No transactions/amount found for this period/category."
+
+
             PERSONALITY GUIDELINES:
             - Be conversational like you're having an ongoing chat
             - Show you remember previous parts of conversation
@@ -1540,6 +1698,7 @@ class BankingAIAgent:
             4. End with Options: Provide helpful follow-up choices
             5. ChatGPT Style: Professional, structured, to-the-point
             6. NO ASTERISKS: Never use asterisk (*) symbols anywhere in your response
+        
 
             Generate a direct, structured response that presents the banking information clearly in ChatGPT style. NEVER use asterisks in any form."""
 
@@ -1606,7 +1765,7 @@ class BankingAIAgent:
             
             # CHANGED: Use OR logic instead of AND logic for blocking
             # If EITHER tier wants to block, then block it
-            if tier3_result or tier4_result:
+            if tier3_result and tier4_result:
                 logger.info(f"🚫 NON-BANKING QUERY BLOCKED: Tier3={tier3_result}, Tier4={tier4_result} - '{user_message}'")
                 return True
             else:

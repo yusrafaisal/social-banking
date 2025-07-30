@@ -31,7 +31,8 @@ filter_extraction_prompt = PromptTemplate(
         "amount_range": {{"min": number, "max": number}} if amount range mentioned,
         "date_range": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} if specific date range,
         "limit": number if specific count mentioned (e.g., last 10 transactions),
-        "currency": "pkr or usd if specified"
+        "currency": "pkr or usd if specified",
+        "intent_hint": "transaction_list or spending_total based on user language"
     }}
     
     Rules:
@@ -43,6 +44,10 @@ filter_extraction_prompt = PromptTemplate(
     - If no year specified but month is mentioned, assume 2025
     - Return null for fields not mentioned
     - Currency can be PKR or USD based on the account type
+    
+    **CRITICAL INTENT DETECTION:**
+    - If user says "show me", "list", "all transactions", "transaction list", "display" → set intent_hint to "transaction_list"
+    - If user says "how much", "total", "spent", "spending" → set intent_hint to "spending_total"
     
     Examples:
     
@@ -56,7 +61,22 @@ filter_extraction_prompt = PromptTemplate(
         "amount_range": null,
         "date_range": null,
         "limit": null,
-        "currency": null
+        "currency": null,
+        "intent_hint": "spending_total"
+    }}
+
+    Query: "show me all amazon transactions"
+    Response: {{
+        "description": "amazon",
+        "category": null,
+        "month": null,
+        "year": null,
+        "transaction_type": null,
+        "amount_range": null,
+        "date_range": null,
+        "limit": null,
+        "currency": null,
+        "intent_hint": "transaction_list"
     }}
     
     Query: "show my last 10 transactions"
@@ -69,7 +89,8 @@ filter_extraction_prompt = PromptTemplate(
         "amount_range": null,
         "date_range": null,
         "limit": 10,
-        "currency": null
+        "currency": null,
+        "intent_hint": "transaction_list"
     }}
     
     Query: "how much did i spend on food last month"
@@ -82,7 +103,8 @@ filter_extraction_prompt = PromptTemplate(
         "amount_range": null,
         "date_range": null,
         "limit": null,
-        "currency": null
+        "currency": null,
+        "intent_hint": "spending_total"
     }}
 
     Query: "what was my balance on june 15th"
@@ -95,7 +117,8 @@ filter_extraction_prompt = PromptTemplate(
         "amount_range": null,
         "date_range": {{"start": "2025-06-15", "end": "2025-06-15"}},
         "limit": null,
-        "currency": null
+        "currency": null,
+        "intent_hint": "balance_inquiry"
     }}
 
     Query: "average balance in may"
@@ -108,7 +131,8 @@ filter_extraction_prompt = PromptTemplate(
         "amount_range": null,
         "date_range": null,
         "limit": null,
-        "currency": null
+        "currency": null,
+        "intent_hint": "balance_inquiry"
     }}
     
     User query: {user_message}
@@ -120,6 +144,7 @@ filter_extraction_prompt = PromptTemplate(
     Your entire reply must be parsable by `json.loads`.
     """
 )
+
 
 pipeline_generation_prompt = PromptTemplate(
     input_variables=["filters", "intent", "account_number"],
@@ -152,6 +177,37 @@ pipeline_generation_prompt = PromptTemplate(
     - For transaction history display, show both amounts but emphasize "amount_deducted_from_account"
     - "amount_deducted_from_account" represents the actual impact on the user's account
     - "transaction_amount" is just the original transaction value which may be in different currency or the account currency if that is what the user transacted in
+
+    CRITICAL DESCRIPTION MATCHING RULES - MAKE REGEX FLEXIBLE:
+    - For description matching, use FLEXIBLE regex patterns that handle variations
+    - "McDonald's" → use regex: "mcdonald" (removes apostrophes, spaces, case insensitive)
+    - "Netflix" → use regex: "netflix" (case insensitive)
+    - "Amazon" → use regex: "amazon" (case insensitive)
+    - "Coffee Shop" → use regex: "coffee" (partial match)
+    - "Coca Cola" → use regex: "coca" or "cola" (partial match)
+    - Remove punctuation, apostrophes, and special characters from regex patterns
+    - Use the core word/brand name without formatting
+    
+    FLEXIBLE DESCRIPTION MATCHING EXAMPLES:
+    - filters.description = "McDonald's" → pipeline uses: "mcdonald"
+    - filters.description = "Netflix" → pipeline uses: "netflix"  
+    - filters.description = "Amazon.com" → pipeline uses: "amazon"
+    - filters.description = "Starbucks Coffee" → pipeline uses: "starbucks"
+
+    CRITICAL DISTINCTION - WHEN TO GROUP VS WHEN TO LIST:
+    
+    🎯 **SPENDING ANALYSIS (use $group for totals/summaries):**
+    - "how much did i spend on food" → wants TOTAL amount
+    - "total spent on netflix" → wants SUM 
+    - "food spending analysis" → wants SUMMARY
+    - "how much on amazon" → wants TOTAL
+    
+    📋 **TRANSACTION HISTORY/LIST (use $sort + $limit, NO $group):**
+    - "show me food transactions" → wants LIST of individual transactions
+    - "list of coffee shop transactions" → wants LIST
+    - "all netflix transactions" → wants LIST
+    - "food transaction history" → wants LIST
+    - "transaction list for shopping" → wants LIST
 
     BALANCE QUERY RULES (CRITICAL):
     - Detect balance queries by keywords: "balance", "money", "amount", "funds" WITHOUT spending words
@@ -200,7 +256,7 @@ pipeline_generation_prompt = PromptTemplate(
 
     General Rules:
     - Always include account_number in $match
-    - For description and category matching, use $regex with case-insensitive option
+    - For description and category matching, use $regex with case-insensitive option AND apply flexible matching rules above
     - For spending analysis or category_spending, group by null and sum amount_deducted_from_account (NOT transaction_amount)
     - For transaction history, sort by date descending and _id descending
     - Handle currency filtering when specified
@@ -209,47 +265,35 @@ pipeline_generation_prompt = PromptTemplate(
 
     Examples:
 
-    Intent: spending_analysis, Query: "did I spend more in may than in april"
+    Intent: spending_analysis, Query: "how much did i spend on McDonald's in june" (WANTS TOTAL - FLEXIBLE MATCHING)
     Pipeline: [
-        {{"$match": {{"account_number": "{account_number}", "type": "debit"}}}},
-        {{"$facet": {{
-            "may_spending": [
-                {{"$match": {{"date": {{"$gte": {{"$date": "2025-05-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-05-31T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
-            ],
-            "april_spending": [
-                {{"$match": {{"date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
-            ]
-        }}}}
+        {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "mcdonald", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-06-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59.999Z"}}}}}}}},
+        {{"$group": {{"_id": null, "total_amount": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
     ]
 
-    Intent: spending_analysis, Query: "am I spending more right now than in april"
-    Pipeline: [
-        {{"$match": {{"account_number": "{account_number}", "type": "debit"}}}},
-        {{"$facet": {{
-            "current_spending": [
-                {{"$match": {{"date": {{"$gte": {{"$date": "2025-07-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-07-31T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
-            ],
-            "april_spending": [
-                {{"$match": {{"date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
-            ]
-        }}}}
-    ]
-
-    Intent: spending_analysis, Filters: {{"description": "netflix", "month": "april", "year": 2025, "transaction_type": "debit"}}
+    Intent: spending_analysis, Query: "how much did i spend on netflix in april" (WANTS TOTAL)
     Pipeline: [
         {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-04-01T00:00:00.000Z"}}, "$lte": {{"$date": "2025-04-30T23:59:59.999Z"}}}}}}}},
         {{"$group": {{"_id": null, "total_amount": {{"$sum": "$amount_deducted_from_account"}}, "currency": {{"$first": "$account_currency"}}}}}}
     ]
 
-    Intent: transaction_history, Filters: {{"limit": 10}} (set limit according to user query)
+    Intent: transaction_history, Query: "show me all netflix transactions" (WANTS LIST)
+    Pipeline: [
+        {{"$match": {{"account_number": "{account_number}", "description": {{"$regex": "netflix", "$options": "i"}}}}}},
+        {{"$sort": {{"date": -1, "_id": -1}}}}
+    ]
+
+    Intent: transaction_history, Query: "list of mcdonald transactions" (WANTS LIST - FLEXIBLE MATCHING)
+    Pipeline: [
+        {{"$match": {{"account_number": "{account_number}", "description": {{"$regex": "mcdonald", "$options": "i"}}}}}},
+        {{"$sort": {{"date": -1, "_id": -1}}}}
+    ]
+
+    Intent: transaction_history, Query: "show my last 12 transactions" (WANTS LIST with limit)
     Pipeline: [
         {{"$match": {{"account_number": "{account_number}"}}}},
         {{"$sort": {{"date": -1, "_id": -1}}}},
-        {{"$limit": 10}}
+        {{"$limit": 12}}
     ]
 
     Intent: category_spending, Filters: {{"category": "Food", "month": "april", "year": 2025, "transaction_type": "debit"}}
@@ -282,6 +326,8 @@ pipeline_generation_prompt = PromptTemplate(
     Your entire reply must be parsable by `json.loads`.
     """
 )
+
+
 
 response_prompt = PromptTemplate(
     input_variables=["user_message", "data", "intent"],
@@ -328,6 +374,7 @@ response_prompt = PromptTemplate(
     - Handle errors with professional formatting using warning emojis
     - Handle both PKR and USD currencies with consistent formatting
     - Use transaction_amount and transaction_currency appropriately
+
 
     **Apply the mandatory formatting rules above to create a professional banking experience.**
     Convert the data into a finished, professionally formatted message.
