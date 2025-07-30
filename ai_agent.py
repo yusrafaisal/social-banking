@@ -1228,7 +1228,7 @@ class BankingAIAgent:
     # === NATURAL LANGUAGE RESPONSE GENERATION ===
     async def _determine_response_format_with_llm(self, user_message: str, data: Any, context_state: str) -> str:
         """Use LLM to determine appropriate response format based on query complexity and data."""
-    
+
         data_summary = self._summarize_data_for_format_analysis(data)
         
         format_analysis_prompt = f"""
@@ -1263,7 +1263,7 @@ class BankingAIAgent:
             response = await llm.ainvoke([SystemMessage(content=format_analysis_prompt)])
             format_type = response.content.strip().upper()
             
-            # Map LLM decision to formatting instructions
+            # Map LLM decision to formatting instructions (NO ASTERISKS)
             format_instructions = {
                 ResponseFormats.CONCISE_ONE_LINER: """
             FORMAT: CONCISE ONE-LINER
@@ -1271,6 +1271,7 @@ class BankingAIAgent:
             - Reference previous context naturally but keep it brief
             - No bullet points or lists needed
             - Example: "Your current balance is $1,234.56" or "You spent $45.20 on Netflix in April"
+            - NEVER use asterisks in your response
             """,
                         ResponseFormats.STRUCTURED_LIST: """
             FORMAT: STRUCTURED DATA PRESENTATION
@@ -1280,6 +1281,7 @@ class BankingAIAgent:
             - Group related information logically
             - End with a helpful summary line if appropriate
             - Preserve ALL data - never omit important details
+            - NEVER use asterisks in your response
             """,
                         ResponseFormats.DETAILED_EXPLANATION: """
             FORMAT: DETAILED EXPLANATION WITH CONTEXT
@@ -1289,6 +1291,7 @@ class BankingAIAgent:
             - Reference previous conversation context
             - Help user understand patterns or insights
             - Structure with natural breaks between topics
+            - NEVER use asterisks in your response
             """,
                         ResponseFormats.HELPFUL_GUIDANCE: """
             FORMAT: HELPFUL GUIDANCE
@@ -1297,6 +1300,7 @@ class BankingAIAgent:
             - Offer specific next steps
             - Keep it friendly and helpful
             - Include examples if relevant
+            - NEVER use asterisks in your response
             """
             }
             
@@ -1311,7 +1315,9 @@ class BankingAIAgent:
         - Reference context naturally
         - Include all important information
         - Make it helpful and clear
+        - NEVER use asterisks in your response
         """
+
 
     def _summarize_data_for_format_analysis(self, data: Any) -> str:
         """Create a summary of available data for format analysis."""
@@ -1349,10 +1355,9 @@ class BankingAIAgent:
         
         return f"Data type: {type(data).__name__}"
 
-    # UPDATE ai_agent.py - Replace your generate_natural_response method (NO EMOJIS)
 
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
-        """Generate contextual LLM responses with ChatGPT-style direct, structured formatting (no emojis)."""
+        """Generate contextual LLM responses with ChatGPT-style direct, structured formatting (no emojis or asterisks)."""
         
         # Special handling for non-banking queries (keep existing)
         if "non-banking question" in context_state or data and data.get("query_type") == "non_banking":
@@ -1378,63 +1383,62 @@ class BankingAIAgent:
         # Use LLM to determine response format for banking queries (keep existing)
         response_format_instruction = await self._determine_response_format_with_llm(user_message, data, context_state)
         
-        # ENHANCED system prompt - CHATGPT DIRECT STYLE (NO ASTERISKS)
-        system_prompt = f"""You are Sage, a professional banking assistant. Generate responses in the exact ChatGPT banking style: direct, structured, and to-the-point. NO asterisks (*) anywhere.
+        # FIXED system prompt - NO ASTERISKS AT ALL
+        system_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, and to-the-point. NEVER use asterisks (*) in any form.
 
         CRITICAL RESPONSE FORMAT:
-        **FIRST LINE MUST ALWAYS BE:** "Hello [FirstName]! [brief context-appropriate greeting]"
+        FIRST LINE MUST ALWAYS BE: "Hello [FirstName]! [brief context-appropriate greeting]"
 
-        **RESPONSE FORMAT RULES (CRITICAL):**
+        RESPONSE FORMAT RULES (CRITICAL):
         {response_format_instruction}
 
-        **CHATGPT-STYLE FORMATTING RULES (MANDATORY - NO ASTERISKS):**
+        CHATGPT-STYLE FORMATTING RULES (MANDATORY - ZERO ASTERISKS):
 
-        **TRANSACTION HISTORY (DIRECT BULLET POINT STYLE):**
+        TRANSACTION HISTORY (DIRECT BULLET POINT STYLE):
         - After greeting, header: "Here are your last [X] transactions:"
         - Use bullet points (•) for each transaction
         - Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
         - NO narrative explanation of each transaction
         - End with: "Let me know if you'd like a filter (e.g., only credits, only food-related) or if you want to send money, download a statement, or something else."
 
-        **BALANCE RESPONSES (DIRECT STYLE):**
+        BALANCE RESPONSES (DIRECT STYLE):
         - After greeting: "Account Balance: [Currency] [Amount] As of: [Date]"
         - Add helpful follow-up: "Is there anything else I can help you with?"
 
-        **VERIFICATION RESPONSES (STRUCTURED):**
+        VERIFICATION RESPONSES (STRUCTURED):
         - After greeting: "Verification successful. Thank you, your identity has been verified."
         - "Please answer any two of the following questions:"
         - Number the verification steps clearly
 
-        **TRANSFER RESPONSES (DIRECT CONFIRMATION):**
+        TRANSFER RESPONSES (DIRECT CONFIRMATION):
         - After greeting: "Success! You have successfully transferred [Currency] [Amount] to [Recipient]."
         - "Reference: [reference] Date: [date] Updated Balance: [Currency] [Amount]"
         - "Would you like to do anything else? (View transactions, check spending, send more money?)"
 
-        **ACCOUNT CONFIRMATION (STRUCTURED):**
+        ACCOUNT CONFIRMATION (STRUCTURED):
         - After greeting: "Account confirmed! Welcome [name], you're now connected to account [masked_account]"
         - List services with bullet points
         - "What can I help you with today?"
 
-        **SPENDING ANALYSIS (STRUCTURED DATA):**
-        - After greeting, use clear headers with bold formatting
+        SPENDING ANALYSIS (STRUCTURED DATA):
+        - After greeting, use clear headers with normal text formatting
         - Present data in structured format with bullet points
         - Include totals and percentages where relevant
         - No long explanations, just the data
 
-        **ERROR HANDLING (PROFESSIONAL & BRIEF):**
+        ERROR HANDLING (PROFESSIONAL & BRIEF):
         - After greeting: "Error: [Brief error explanation]"
         - Provide clear next steps
         - Keep it concise and professional
 
-        **GENERAL STYLE RULES:**
-        1. **ALWAYS START WITH GREETING:** "Hello [FirstName]! [context]"
-        2. **Be Direct**: Don't explain every detail, just present the data
-        3. **Use Structure**: Bullet points, clear headers, organized layout
-        4. **Bold Important Info**: Use **bold** for amounts, names, status
-        5. **End with Options**: Always provide helpful follow-up choices
-        6. **No Narrative**: Don't tell a story, just show the information
-        7. **NO ASTERISKS**: Use only text and **bold** formatting - NEVER use * symbols
-        8. **Consistent Format**: Same structure for similar types of responses
+        GENERAL STYLE RULES:
+        1. ALWAYS START WITH GREETING: "Hello [FirstName]! [context]"
+        2. Be Direct: Don't explain every detail, just present the data
+        3. Use Structure: Bullet points, clear headers, organized layout
+        4. NO ASTERISKS: Never use any asterisk (*) symbols anywhere in your response
+        5. End with Options: Always provide helpful follow-up choices
+        6. No Narrative: Don't tell a story, just show the information
+        7. Consistent Format: Same structure for similar types of responses
 
         CURRENT CONTEXT: {context_state}
         USER'S MESSAGE: "{user_message}"
@@ -1444,31 +1448,31 @@ class BankingAIAgent:
         {conversation_history}
 
         CONTEXTUAL RESPONSE RULES (CRITICAL):
-            1. **Reference Previous Data**: If you previously showed transactions, balances, or spending - reference them specifically
+            1. Reference Previous Data: If you previously showed transactions, balances, or spending - reference them specifically
             - "Looking at those 5 transactions I showed you..."
             - "From your June spending that we just discussed..."
             - "Referring back to your balance of $2,341..."
 
-            2. **Build on Previous Context**: Make it feel like a continuous conversation
+            2. Build on Previous Context: Make it feel like a continuous conversation
             - "Now looking at that data..." 
             - "Based on what we just saw..."
             - "Following up on those transactions..."
 
-            3. **Use Specific Numbers/Details**: Reference exact amounts, dates, descriptions from previous messages
+            3. Use Specific Numbers/Details: Reference exact amounts, dates, descriptions from previous messages
             - Instead of: "Your spending was high"
             - Say: "Your $550 spending on groceries that I mentioned"
 
-            4. **Natural Conversation Flow**: 
+            4. Natural Conversation Flow: 
             - If user asks follow-up questions, acknowledge the connection
             - If showing new data, relate it to previous context when relevant
             - Make responses feel like you remember everything
 
-            5. **Contextual Greetings**: 
+            5. Contextual Greetings: 
             - Don't always greet the same way
             - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
             - For continuing conversations: "{first_name}, looking at that data..."
 
-            6. **Balance Query Responses**:
+            6. Balance Query Responses:
             - If context mentions "balance at specific date", focus on the date and balance amount
             - If context mentions "average balance", explain the calculation period
             - Always include currency information for balance responses
@@ -1481,6 +1485,8 @@ class BankingAIAgent:
             - Make each response build on the previous conversation
             - Avoid repetitive patterns - vary your language
 
+            CRITICAL: NEVER USE ASTERISKS (*) IN ANY FORM. Use plain text only.
+
             Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
         
         try:
@@ -1491,35 +1497,35 @@ class BankingAIAgent:
             return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
 
 
-    # ALSO UPDATE your generate_contextual_banking_response method (NO EMOJIS):
+
 
     async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
-        """Generate banking responses with ChatGPT-style direct, structured formatting (no emojis)."""
+        """Generate banking responses with ChatGPT-style direct, structured formatting (no asterisks)."""
         
         conversation_history = self._get_context_summary(memory.chat_memory.messages)
         
-        # Enhanced banking context prompt with CHATGPT DIRECT STYLE (NO EMOJIS)
-        banking_context_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, to-the-point. DO NOT use any emojis.
+        # Enhanced banking context prompt with CHATGPT DIRECT STYLE (NO ASTERISKS)
+        banking_context_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, to-the-point. NEVER use asterisks (*) in any form.
 
         
             
-            **CHATGPT-STYLE FORMATTING (MANDATORY - NO EMOJIS):**
+            CHATGPT-STYLE FORMATTING (MANDATORY - NO ASTERISKS):
 
-            **TRANSACTION LISTS (DIRECT BULLET STYLE):**
-            Header: "Here are your **last [X] transactions**:"
+            TRANSACTION LISTS (DIRECT BULLET STYLE):
+            Header: "Here are your last [X] transactions:"
             Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
             Footer: "Let me know if you'd like a filter or if you want to send money, download a statement, or something else."
 
-            **BALANCE FORMAT:** 
-            "**Account Balance:** PKR **245,600.00** **As of:** **29th July 2025**"
+            BALANCE FORMAT: 
+            "Account Balance: PKR 245,600.00 As of: 29th July 2025"
 
-            **TRANSFER FORMAT:** 
-            "**Success!** You have successfully transferred **PKR 1,000** to **Ali Raza**"
+            TRANSFER FORMAT: 
+            "Success! You have successfully transferred PKR 1,000 to Ali Raza"
 
-            **VERIFICATION FORMAT:** 
-            "**Verification successful.** Thank you, your identity has been verified."
+            VERIFICATION FORMAT: 
+            "Verification successful. Thank you, your identity has been verified."
 
-            **SPENDING ANALYSIS:** 
+            SPENDING ANALYSIS: 
             Use structured data presentation with clear headers and bullet points
 
             CONVERSATION HISTORY: {conversation_history}
@@ -1528,14 +1534,14 @@ class BankingAIAgent:
             QUERY RESULTS: {json.dumps(query_result) if query_result else "No data"}
 
             RESPONSE RULES:
-            1. **Be Direct**: Present data clearly without narrative explanation
-            2. **Use Structure**: Bullet points, clear headers, organized layout
-            3. **Reference Context**: Connect to previous conversation when relevant
-            4. **End with Options**: Provide helpful follow-up choices
-            5. **ChatGPT Style**: Professional, structured, to-the-point
-            6. **NO EMOJIS**: Use only text and **bold** formatting
+            1. Be Direct: Present data clearly without narrative explanation
+            2. Use Structure: Bullet points, clear headers, organized layout
+            3. Reference Context: Connect to previous conversation when relevant
+            4. End with Options: Provide helpful follow-up choices
+            5. ChatGPT Style: Professional, structured, to-the-point
+            6. NO ASTERISKS: Never use asterisk (*) symbols anywhere in your response
 
-            Generate a direct, structured response that presents the banking information clearly in ChatGPT style. DO NOT use any emojis."""
+            Generate a direct, structured response that presents the banking information clearly in ChatGPT style. NEVER use asterisks in any form."""
 
         try:
             response = await llm.ainvoke([SystemMessage(content=banking_context_prompt)])
@@ -1549,6 +1555,7 @@ class BankingAIAgent:
             logger.error(f"Error generating contextual banking response: {e}")
             return await self.generate_natural_response(ContextStates.ERROR_OCCURRED, {"error": str(e)}, user_message, first_name, conversation_history)
             
+                    
     def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
         """Enhanced non-banking detection requiring ALL tiers to agree before blocking."""
         try:
