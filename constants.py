@@ -192,7 +192,7 @@ class TransactionKeywords:
 # ===== LLM CONFIGURATION =====
 class LLMConfig:
     MODEL_NAME = "gpt-4o"
-    TEMPERATURE = 0.3
+    TEMPERATURE = 0.1
     MAX_TOKENS_OTP = 10
     TEMPERATURE_TRANSLATION = 0.1
     TIMEOUT_SECONDS = 60.0

@@ -257,6 +257,7 @@ class BankingAIAgent:
                 return full_context[:Limits.MAX_CONTEXT_LENGTH] + "..."
         
         return full_context
+    
 
     def resolve_contextual_query(self, user_message: str, conversation_history: str) -> str:
         """Enhanced contextual query resolution with multi-turn conversation analysis."""
@@ -264,15 +265,94 @@ class BankingAIAgent:
             if not conversation_history or len(conversation_history.strip()) < 10:
                 return user_message  # No context to work with
             
-            # Enhanced prompt with better multi-turn handling
+            # Enhanced prompt with explicit ambiguity detection
             enhanced_contextual_prompt = f"""
-            You are an advanced query resolver for banking conversations. Analyze the ENTIRE conversation history to resolve contextual queries that may reference information from multiple previous exchanges.
+            You are an advanced query resolver for banking conversations. Your PRIMARY job is to detect ambiguous transfer references that need clarification.
 
             FULL CONVERSATION HISTORY:
             {conversation_history}
 
             CURRENT CONTEXTUAL QUERY: "{user_message}"
-            CRITICAL REQUIREMENT: Return ONLY the resolved standalone query - NO explanations, NO reasoning, just the final query.
+            
+            **STEP 1: CRITICAL AMBIGUITY DETECTION - CHECK THIS FIRST**
+            
+            Before doing ANY resolution, count vendor/transaction occurrences in the conversation history:
+            
+            1. SCAN the conversation history for vendor names (McDonald, Foodpanda, Netflix, Uber, etc.)
+            2. COUNT how many times each vendor appears in separate transactions
+            3. CHECK if current query mentions a vendor ambiguously
+            
+            **AMBIGUOUS REFERENCES TO DETECT:**
+            - "the [vendor] transaction" (when multiple exist)
+            - "the [vendor] payment" (when multiple exist)  
+            - "[vendor] transaction" (when multiple exist)
+            - "that [vendor] purchase" (when multiple exist)
+            - "the [amount] transaction" (when multiple transactions have same amount)
+            - "the [date] transaction" (when multiple transactions on same date)
+            - "the [category] transaction" (when multiple in same category)
+            
+            **BLOCKING RULE:**
+            IF conversation history shows 2+ transactions from same vendor/date/amount/category AND current query refers to "the [vendor/date/amount/category] transaction" → KEEP QUERY UNCHANGED (DO NOT RESOLVE)
+            
+            **CONCRETE EXAMPLES:**
+            
+            History shows: "McDonalds $20.33, McDonalds $10.41" (2 McDonald transactions)
+            Query: "transfer 10% of the mcdonald transaction to ahmed"
+            → RETURN EXACTLY: "transfer 10% of the mcdonald transaction to ahmed" (NO CHANGES)
+            
+            History shows: "Foodpanda $18.71, Foodpanda $24.10, Foodpanda $21.49" (3 Foodpanda)
+            Query: "10% of the foodpanda transaction to john"  
+            → RETURN EXACTLY: "10% of the foodpanda transaction to john" (NO CHANGES)
+            
+            History shows: "Netflix $15.99, Netflix $12.99" (2 Netflix transactions)
+            Query: "send 5% of the netflix payment to sarah"
+            → RETURN EXACTLY: "send 5% of the netflix payment to sarah" (NO CHANGES)
+            
+            History shows: "Transaction on July 15: $50, Transaction on July 15: $75" (2 transactions same date)
+            Query: "transfer 10% of the july 15 transaction"
+            → RETURN EXACTLY: "transfer 10% of the july 15 transaction" (NO CHANGES)
+            
+            **EXAMPLES WHERE RESOLUTION IS ALLOWED:**
+            
+            History shows: "Netflix $15.99" (only 1 Netflix)
+            Query: "5% of the netflix payment to sarah"
+            → CAN RESOLVE: "send $0.80 (5% of $15.99 Netflix payment) to sarah"
+            
+            History shows: "McDonalds $20.33, Foodpanda $18.71" (different vendors)
+            Query: "10% of the mcdonald transaction to ahmed"
+            → CAN RESOLVE: "transfer $2.03 (10% of $20.33 McDonald transaction) to ahmed"
+            
+            History shows: "McDonalds $20.33, McDonalds $10.41" (2 McDonald transactions)
+            Query: "10% of the latest mcdonald transaction to ahmed" (user specified "latest")
+            → CAN RESOLVE: "transfer $1.04 (10% of latest $10.41 McDonald transaction) to ahmed"
+            
+            **STEP 2: EXECUTION LOGIC**
+            
+            1. FIRST: Scan conversation history and count vendor occurrences
+            2. SECOND: Check if current query mentions vendor/date/amount/category ambiguously
+            3. THIRD: Apply blocking rule or proceed with resolution
+            
+            **COUNT VENDORS IN HISTORY:**
+            - McDonald: Count occurrences
+            - Foodpanda: Count occurrences  
+            - Netflix: Count occurrences
+            - Uber: Count occurrences
+            - [Any other vendors]: Count occurrences
+            
+            **CHECK CURRENT QUERY:**
+            - Does it say "the [vendor] transaction"?
+            - Does it say "the [date] transaction"?
+            - Does it say "the [amount] transaction"?
+            - Does it say "the [category] transaction"?
+            
+            **APPLY RULE:**
+            - IF vendor count ≥ 2 AND query mentions that vendor ambiguously → BLOCK (return unchanged)
+            - IF date/amount/category has multiple matches AND query is ambiguous → BLOCK (return unchanged)
+            - OTHERWISE → PROCEED with normal resolution
+            
+            **STEP 3: NORMAL RESOLUTION (only if not blocked)**
+            
+            If not blocked by ambiguity rule, then proceed with normal contextual resolution:
 
             ADVANCED RESOLUTION RULES:
 
@@ -286,7 +366,7 @@ class BankingAIAgent:
 
             a) TRANSACTION REFERENCES:
             - "which one" → find most recent transaction list
-            - "that transaction" → identify specific transaction mentioned
+            - "that transaction" → identify specific transaction mentioned (if unambiguous)
             - "those amounts" → find all amounts in recent context
             - "the expensive one" → find highest amount mentioned
 
@@ -301,68 +381,53 @@ class BankingAIAgent:
             - "that month" → identify timeframe from previous discussion
             - "those expenses" → find expense list from conversation
 
-            d) CROSS-MESSAGE REFERENCES:
-            - User: "show transactions" → Assistant: [shows 5 transactions] → User: "what about june ones" 
-            - Resolve: "show me transactions for June" (combining transaction request + timeframe)
-
-            3. CONTEXT CHAIN EXAMPLES:
-
-            Message 1: "show my balance" → "Balance: $1,500"
-            Message 2: "show my spending" → "June spending: $800"  
-            Message 3: "can I afford 1000 with that" 
-            → Resolve: "can I afford $1000 based on my current balance of $1500"
-
-            Message 1: "transaction history" → "Last 5 transactions: Netflix $15, Grocery $50..."
-            Message 2: "which category spent most" → "Grocery category spent $200 total"
-            Message 3: "show me more of those" 
-            → Resolve: "show me more grocery transactions from my transaction history"
-
-            4. PERCENTAGE & CALCULATION HANDLING:
-            - Always calculate percentages when referenced
+            3. PERCENTAGE & CALCULATION HANDLING:
+            - Always calculate percentages when referenced (EXCEPT when vendor is ambiguous)
             - Include both percentage and calculated amount
             - Reference the original amount being calculated from
 
-            5. MULTI-LANGUAGE SUPPORT:
+            4. MULTI-LANGUAGE SUPPORT:
             - "inka total" = "their total" 
             - "kitna" = "how much"
             - "usmein se" = "from those"
             - Convert to English while preserving intent
 
-            6. INCOMPLETE TRANSFER RESOLUTION:
+            5. INCOMPLETE TRANSFER RESOLUTION:
             Message 1: "transfer 100" → "Need recipient"
             Message 2: "to john"
             → Resolve: "transfer 100 to john" (combining amount + recipient)
 
-            7. EVOLVING CONTEXT:
-            - Track how user's focus shifts (balance → transactions → specific category)
-            - Maintain context of what data was last shown
-            - Understand follow-up questions in context of previous answers
+            **FINAL CHECK YOUR WORK:**
+            1. Did I count vendor occurrences correctly?
+            2. Does the current query mention a vendor/date/amount/category ambiguously?
+            3. If both true → return query unchanged
+            4. If false → proceed with resolution
+            5. Double-check my decision
 
-            ENHANCED EXAMPLES:
+            **STEP 4: PENDING TRANSFER DETECTION**
 
-            History: 
-            Human: "show my transactions"
-            Assistant: "Here are your last 4 transactions: 1. Netflix $15, 2. Grocery $77, 3. Gas $45, 4. Coffee $8"
-            Human: "spending breakdown"  
-            Assistant: "Entertainment: $15, Food: $85, Transportation: $45"
-            Query: "food wala expand karo"
-            → "show me detailed breakdown of food category spending including grocery and coffee transactions"
+            Check conversation history for pending transfers needing completion:
 
-            History:
-            Human: "my balance"
-            Assistant: "Account Balance: PKR 245,600 as of July 29"
-            Human: "recent spending"
-            Assistant: "July spending: PKR 25,000 across 15 transactions"  
-            Query: "kitna bacha hai percentage mein"
-            → "what percentage of my PKR 245,600 balance remains after PKR 25,000 spending"
+            PENDING TRANSFER PATTERNS:
+            - "I found multiple Foodpanda transactions. Which one would you like?"
+            - "Please provide your OTP"
+            - "Do you want to confirm the transfer?"
 
-            RESOLUTION STRATEGY:
-            1. Identify ALL relevant context from conversation history
-            2. Determine what "that", "those", "it", "them" refer to specifically
-            3. Include exact amounts, names, timeframes from context
-            4. Calculate any percentages or math operations
-            5. Preserve user's original intent and language preference
-            6. Create a complete, standalone query
+            FOLLOW-UP RESOLUTION:
+            - If history shows clarification request + user gives selection → resolve as transfer completion
+            - If history shows OTP request + user gives OTP → resolve as transfer verification
+            - If history shows confirmation request + user says yes/no → resolve as transfer confirmation
+
+            EXAMPLES:
+            History: "Which Foodpanda transaction? 1. May 14: $24.10 2. June 19: $18.71"
+            Current: "14th my one" 
+            → RESOLVE: "transfer 10% of the May 14 $24.10 Foodpanda transaction to ahmed"
+
+            History: "Please provide OTP for transfer $2.41 to ahmed"
+            Current: "8978"
+            → RESOLVE: "OTP 8978 for transfer $2.41 to ahmed"
+
+            CRITICAL REQUIREMENT: Return ONLY the resolved standalone query - NO explanations, NO reasoning, just the final query.
 
             RESOLVED STANDALONE QUERY:
             """
@@ -380,6 +445,7 @@ class BankingAIAgent:
         except Exception as e:
             logger.error(f"Error in enhanced contextual query resolution: {e}")
             return user_message  # Return original query if resolution fails
+
 
     def _extract_banking_entities_from_history(self, conversation_history: str) -> Dict[str, Any]:
         """Extract banking entities and context from conversation history for better resolution."""
@@ -592,25 +658,34 @@ class BankingAIAgent:
 
     # === INITIAL GREETING HANDLING ===
     async def handle_initial_greeting(self) -> str:
-        """Handle initial user greeting and ask for CNIC verification."""
+        """Handle initial user greeting and ask for CNIC verification with bold formatting and clear structure."""
         try:
-            greeting_prompt = """You are Sage, a friendly banking assistant. A user just greeted you (said hi, hello, etc.) to start a new banking session.
+            greeting_prompt = """
+            You are Kora, a friendly banking assistant. A user just greeted you (said hi, hello, etc.) to start a new banking session.
 
-        Your task:
-        1. Greet them warmly and introduce yourself as their banking assistant
-        2. Explain that you can help with their banking needs
-        3. Ask them to provide their CNIC for secure verification
-        4. Mention the CNIC format (12345-1234567-1) 
-        5. Keep it friendly and welcoming
+            Your task:
+            1. Greet them warmly and introduce yourself as their banking assistant
+            2. Explain that you can help with their banking needs
+            3. Ask them to provide their **CNIC** for secure verification
+            4. Mention the **CNIC format** (**12345-1234567-1**)
+            5. Keep it friendly and welcoming
 
-        Generate a natural, welcoming response that guides them to the next step."""
+            **CRITICAL FORMATTING RULES:**
+            - **BOLD** all important words and actions: **CNIC**, **banking assistant**, **secure**, **verification**, **format**, **account**, **help**
+            - Use line breaks for clarity and structure
+            - Make the next step ("please provide your CNIC") stand out clearly
+            - Structure the message so it's easy to read and follow
 
+            Generate a natural, welcoming response that guides them to the next step, using proper bold formatting and clear structure.
+            """
             response = await llm.ainvoke([SystemMessage(content=greeting_prompt)])
             return response.content.strip()
         except Exception as e:
             logger.error(f"Error generating initial greeting: {e}")
-            return "Hello! I'm Sage, your banking assistant. I'm here to help you with all your banking needs. To get started securely, could you please provide your CNIC in the format 12345-1234567-1?"
-        
+            return (
+                "Hello! I'm **Kora**, your **banking assistant**. I'm here to help you with all your **banking needs**.\n\n"
+                "To get started **securely**, could you please provide your **CNIC** in the format **12345-1234567-1**?"
+            )
     def _is_simple_greeting_or_general(self, user_message: str) -> bool:
         """Check if message is a simple greeting or general question."""
         user_lower = user_message.lower().strip()
@@ -627,41 +702,54 @@ class BankingAIAgent:
     
     # === OTP HANDLING ===
     async def handle_otp_request(self, first_name: str = "") -> str:
-        """Handle OTP request after CNIC verification."""
+        """Handle OTP request after CNIC verification with bold formatting and clear structure."""
         try:
-            otp_prompt = f"""You are Sage, a banking assistant. A user has just had their CNIC verified successfully and now needs to provide an OTP for additional security.
+            otp_prompt = f"""You are Kora, a banking assistant. A user has just had their **CNIC** verified successfully and now needs to provide an **OTP** for additional security.
 
-        Your task:
-        1. Explain that for additional security, they need to provide an OTP
-        2. Tell them the OTP is a number between {Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits sent to your mobile phone
-        3. Ask them to enter their OTP
-        4. Keep it simple and secure-sounding
+Your task:
+1. Explain that for additional security, they need to provide an **OTP**
+2. Tell them the **OTP** is a number between **{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits** sent to their **mobile phone**
+3. Ask them to enter their **OTP**
+4. **Bold** all important words and actions: **OTP**, **CNIC**, **security**, **mobile phone**, **digits**, **verification**
+5. Use line breaks for clarity and structure
+6. Make the next step ("please provide your OTP") stand out clearly
 
-        Generate a natural, security-focused response asking for OTP."""
-
+Generate a natural, security-focused response asking for **OTP**, using proper bold formatting and clear structure.
+"""
             response = await llm.ainvoke([SystemMessage(content=otp_prompt)])
             return response.content.strip()
         except Exception as e:
             logger.error(f"Error generating OTP request: {e}")
-            return f"Great! For additional security, {first_name}, please provide an OTP. You should have received an OTP ({Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits) on your mobile phone."
-
+            return (
+                f"Great! For additional **security**, {first_name}, please provide your **OTP**. "
+                f"You should have received an **OTP** (**{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits**) on your **mobile phone**."
+            )
     async def handle_otp_success(self, user_name: str, accounts: List[str]) -> str:
-        """Handle successful OTP verification - should only ask for account selection."""
+        """Handle successful OTP verification - should only ask for account selection with bold formatting and clear structure."""
         try:
             first_name = user_name.split()[0]
-            
-            # Format accounts for selection
+
+            # Format accounts for selection with bold last 4 digits
             account_list = []
             for i, account in enumerate(accounts, 1):
-                account_list.append(f"{i}. {account}")
-            
+                # Mask account except last 4 digits and bold them
+                masked = f"***-***-**<b>{account[-4:]}</b>"
+                account_list.append(f"{i}. {masked}")
+
             accounts_text = "\n".join(account_list)
-            
-            return f"Hello {first_name}! OTP verified successfully.\n\nPlease select your account:\n{accounts_text}\n\nYou can select by typing the account number, last 4 digits, or saying 'first account', 'second account', etc."
-            
+
+            return (
+                f"Hello <b>{first_name}</b>! <b>OTP verified successfully.</b>\n\n"
+                f"<b>Please select your account:</b>\n"
+                f"{accounts_text}\n\n"
+                f"You can select by typing the <b>account number</b>, <b>last 4 digits</b>, or saying <b>'first account'</b>, <b>'second account'</b>, etc."
+            )
+
         except Exception as e:
             logger.error(f"Error in OTP success: {e}")
-            return "OTP verified successfully! Now please select your account by entering the last 4 digits."
+            return (
+                "<b>OTP verified successfully!</b> Now please select your account by entering the <b>last 4 digits</b>."
+            )
         
     async def handle_otp_failure(self, user_input: str, first_name: str = "") -> str:
         """Handle failed OTP verification."""
@@ -680,8 +768,9 @@ class BankingAIAgent:
             return f"Sorry {first_name}, that OTP format isn't valid. Please enter a number between {Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits."
 
     # === CNIC VERIFICATION METHODS ===
+
     async def handle_cnic_verification_success(self, user_name: str, accounts: List[str], cnic: str) -> str:
-        """Handle successful CNIC verification with natural response."""
+        """Handle successful CNIC verification with enhanced formatting."""
         try:
             context_state = ContextStates.CNIC_VERIFICATION_SUCCESS
             data = {
@@ -693,12 +782,31 @@ class BankingAIAgent:
                 "otp_format": f"{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits"
             }
             
-            return await self.generate_natural_response(context_state, data, cnic, user_name.split()[0])
+            # Enhanced prompt for CNIC success with formatting
+            cnic_success_prompt = f"""You are Kora, a banking assistant. The user's **CNIC** has been successfully verified.
+
+            USER: **{user_name}**
+            ACCOUNTS FOUND: {len(accounts)}
+            NEXT STEP: **OTP verification**
+
+            Your response should:
+            1. Congratulate them on successful **CNIC verification**
+            2. Explain they need to provide an **OTP** (**{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits**)
+            3. **Bold** all important terms like **OTP**, **CNIC**, **verification**
+            4. Make it clear what they need to do next
+            5. Keep it welcoming and secure
+
+            Generate a well-formatted response with proper **bold highlighting**."""
+            
+            response = await llm.ainvoke([SystemMessage(content=cnic_success_prompt)])
+            return response.content.strip()
             
         except Exception as e:
             logger.error(f"Error in CNIC verification success: {e}")
             context_state = ContextStates.ERROR_OCCURRED
             return await self.generate_natural_response(context_state, {"error": str(e)}, cnic, user_name.split()[0])
+
+
 
     async def handle_cnic_verification_failure(self, cnic: str, first_name: str = "") -> str:
         """Handle failed CNIC verification with natural response."""
@@ -762,27 +870,29 @@ class BankingAIAgent:
             context_state = ContextStates.ERROR_OCCURRED
             return await self.generate_natural_response(context_state, {"error": str(e)}, selection, first_name)
 
+        
     async def handle_account_confirmation(self, account_number: str, user_name: str) -> str:
-        """Handle account selection confirmation with natural response."""
+        """Handle account selection confirmation with enhanced formatting."""
         try:
             first_name = user_name.split()[0]
             masked_account = f"***-***-{account_number[-4:]}"
             
-            return f"""Hello {first_name}! Account confirmed! Welcome, you're now connected to account {masked_account}.
+            return f"""Hello {first_name}! Account confirmed! 
+
+    Welcome, you're now connected to account {masked_account}.
 
     I can help you with:
-    - Check your account balance
-    - View transaction history  
-    - Analyze your spending patterns
-    - Transfer money to others
-    - Financial planning assistance
+    • Check your account balance
+    • View transaction history  
+    • Analyze your spending patterns
+    • Transfer money to others
+    • Financial planning assistance
 
     What can I help you with today?"""
-            
+                    
         except Exception as e:
             logger.error(f"Error in account confirmation: {e}")
             return f"Hello! Account confirmed successfully. What can I help you with today?"
-        
             
     # === QUERY PIPELINE FLOW ===
     def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
@@ -931,8 +1041,6 @@ class BankingAIAgent:
             return response_text
 
 
-
-
     async def process_query(self, user_message: str, account_number: str, first_name: str) -> str:
         """Enhanced process query with contextual awareness (exit detection handled at webhook level)."""
         memory = self.get_user_memory(account_number)
@@ -1077,9 +1185,6 @@ class BankingAIAgent:
                 memory.chat_memory.add_ai_message(response)
                 return response
 
-
-
-
     async def handle_transfer_cancellation_during_process(self, first_name: str, stage: str) -> str:
         """Handle transfer cancellation during the transfer process (OTP or confirmation stage)."""
         try:
@@ -1099,26 +1204,34 @@ class BankingAIAgent:
             return f"Transfer cancelled, {first_name}. You're back to your main banking menu. What can I help you with?"
 
 
-
-
     # === HANDLE MONEY TRANSFERS ===
+
     async def handle_transfer_otp_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
-        """Handle OTP request for money transfer."""
+        """Handle OTP request for money transfer with enhanced formatting."""
         try:
-            context_state = ContextStates.TRANSFER_DETAILS_COLLECTED
-            data = {
-                "transfer_amount": amount,
-                "transfer_currency": currency,
-                "transfer_recipient": recipient,
-                "otp_required": True
-            }
+            transfer_otp_prompt = f"""You are Sage, a banking assistant. The user wants to transfer money and needs to provide an **OTP** for security.
+
+            TRANSFER DETAILS:
+            - Amount: **{amount} {currency}**
+            - Recipient: **{recipient}**
+            - User: **{first_name}**
+
+            Your response should:
+            1. Confirm the transfer details clearly
+            2. Request **OTP** for security verification
+            3. Explain OTP format (**{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits**)
+            4. **Bold** all important elements like amounts, recipient name, **OTP**
+            5. Make it clear this is for security
+
+            Generate a well-formatted, secure response."""
             
-            return await self.generate_natural_response(context_state, data, f"transfer {amount} {currency} to {recipient}", first_name)
+            response = await llm.ainvoke([SystemMessage(content=transfer_otp_prompt)])
+            return response.content.strip()
             
         except Exception as e:
             logger.error(f"Error in transfer OTP request: {e}")
-            return f"To complete the transfer of {amount} {currency} to {recipient}, please provide an OTP (any number between {Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits) for security verification."
-
+            return f"To complete the transfer of **{amount} {currency}** to **{recipient}**, please provide an **OTP** (any number between **{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits**) for security verification."
+        
     async def handle_transfer_otp_success(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
         """Handle successful transfer OTP verification."""
         try:
@@ -1161,8 +1274,15 @@ class BankingAIAgent:
                     - If only recipient is provided ("to ahmed abrar"), look for amount/percentage in recent conversation
                     - If only amount is provided, look for recipient in recent conversation
                     - Combine information from multiple recent messages to complete transfer details
+                    
+                    **CRITICAL CLARIFICATION RULE:**
+                    - If conversation history shows multiple transactions of the same type/vendor/date AND user refers to "the [vendor/date] transaction", you MUST return a clarification request instead of calculating
+                    - Example: History shows 3 Foodpanda transactions, user says "10% of the foodpanda transaction" → Return {{"clarification_needed": true, "matching_transactions": [list], "message": "Which Foodpanda transaction?"}}
+                    - Only calculate when user specifies "the latest", "the first", "the $18.71 one", etc.
 
-                    Enhanced Examples:
+                    Return JSON: {{"amount": number_or_null, "currency": string_or_null, "recipient": string_or_null, "clarification_needed": boolean, "matching_transactions": array}}
+                
+                    OTHER Transfer Examples:
                     History: "Here's your current account balance: USD 1,554.41"
                     Current: "ok transfer 1% of that" → {{"amount": 15.54, "currency": "USD", "recipient": null}}
 
@@ -1180,7 +1300,7 @@ class BankingAIAgent:
                     - If current message only has recipient, search history for amount
                     - If current message only has amount, search history for recipient
                     - Prioritize most recent complete transfer attempt
-
+                  
                     Return JSON: {{"amount": number, "currency": string, "recipient": string}}
                     Set null for missing fields, but try to complete from conversation history first.
                     """
@@ -1191,7 +1311,26 @@ class BankingAIAgent:
             logger.info(f"🔍 TRANSFER DEBUG - LLM response: {response.content}") 
 
             transfer_details = self.extract_json_from_response(response.content)
-            transfer_details = self.extract_json_from_response(response.content)
+
+            # CRITICAL FIX: Check for clarification_needed FIRST, before any fallback logic
+            if transfer_details and transfer_details.get("clarification_needed"):
+                logger.info("🔍 CLARIFICATION NEEDED: Multiple transactions match user's request")
+                
+                # Format the clarification response
+                matching_transactions = transfer_details.get("matching_transactions", [])
+                
+                context_state = "Multiple transactions found, asking user to specify which one"
+                data = {
+                    "clarification_needed": True,
+                    "matching_transactions": matching_transactions,
+                    "transaction_count": len(matching_transactions),
+                    "user_request": user_message,
+                    "recipient": transfer_details.get("recipient"),
+                    "percentage": "10%"  # Extract from user message if needed
+                }
+                
+                conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
 
             # If transfer details are incomplete, try to complete from conversation history
             if not transfer_details or not all([transfer_details.get("amount"), transfer_details.get("recipient")]):
@@ -1502,44 +1641,26 @@ class BankingAIAgent:
             response = await llm.ainvoke([SystemMessage(content=format_analysis_prompt)])
             format_type = response.content.strip().upper()
             
-            # Map LLM decision to formatting instructions (NO ASTERISKS)
+            # Simplified format instructions - let LLM format naturally
             format_instructions = {
                 ResponseFormats.CONCISE_ONE_LINER: """
-            FORMAT: CONCISE ONE-LINER
-            - Give a direct, single sentence answer with the specific number
-            - Reference previous context naturally but keep it brief
-            - No bullet points or lists needed
-            - Example: "Your current balance is $1,234.56" or "You spent $45.20 on Netflix in April"
-            - NEVER use asterisks in your response
+            Provide a direct, single sentence answer with the specific information requested.
+            Keep it brief and natural.
             """,
-                        ResponseFormats.STRUCTURED_LIST: """
-            FORMAT: STRUCTURED DATA PRESENTATION
-            - Use bullet points (•) or numbering for multiple items/transactions
-            - Organize data clearly with proper formatting
-            - Include all relevant details, amounts, dates, and descriptions
-            - Group related information logically
-            - End with a helpful summary line if appropriate
-            - Preserve ALL data - never omit important details
-            - NEVER use asterisks in your response
+                ResponseFormats.STRUCTURED_LIST: """
+            Present data in a clear, organized format. 
+            Show all relevant details naturally.
+            Include helpful context where appropriate.
             """,
-                        ResponseFormats.DETAILED_EXPLANATION: """
-            FORMAT: DETAILED EXPLANATION WITH CONTEXT
-            - Provide thorough explanation with context
-            - Include all relevant numbers and comparisons
-            - Use paragraphs and logical flow
-            - Reference previous conversation context
-            - Help user understand patterns or insights
-            - Structure with natural breaks between topics
-            - NEVER use asterisks in your response
+                ResponseFormats.DETAILED_EXPLANATION: """
+            Provide thorough explanation with context.
+            Include all relevant information and insights.
+            Help user understand patterns or findings.
             """,
-                        ResponseFormats.HELPFUL_GUIDANCE: """
-            FORMAT: HELPFUL GUIDANCE
-            - Provide clear, supportive guidance
-            - Explain what's needed or what went wrong
-            - Offer specific next steps
-            - Keep it friendly and helpful
-            - Include examples if relevant
-            - NEVER use asterisks in your response
+                ResponseFormats.HELPFUL_GUIDANCE: """
+            Provide clear, supportive guidance.
+            Explain what's needed and offer next steps.
+            Keep it friendly and helpful.
             """
             }
             
@@ -1547,15 +1668,7 @@ class BankingAIAgent:
             
         except Exception as e:
             logger.error(f"Error in LLM format analysis: {e}")
-            # Fallback to default detailed format
-            return """
-        FORMAT: CONVERSATIONAL RESPONSE
-        - Provide appropriate detail based on the data available
-        - Reference context naturally
-        - Include all important information
-        - Make it helpful and clear
-        - NEVER use asterisks in your response
-        """
+            return "Provide a natural, helpful response based on the available data."
 
 
     def _summarize_data_for_format_analysis(self, data: Any) -> str:
@@ -1593,14 +1706,13 @@ class BankingAIAgent:
             return "; ".join(summary_parts) if summary_parts else "Simple data object"
         
         return f"Data type: {type(data).__name__}"
-
-
+    
     async def generate_natural_response(self, context_state: str, data: Any, user_message: str, first_name: str, conversation_history: str = "") -> str:
-        """Generate contextual LLM responses with ChatGPT-style direct, structured formatting (no emojis or asterisks)."""
+        """Generate natural LLM responses with bold formatting and highlighting for important keywords."""
         
-        # Special handling for non-banking queries (keep existing)
+        # Special handling for non-banking queries
         if "non-banking question" in context_state or data and data.get("query_type") == "non_banking":
-            non_banking_prompt = f"""You are Sage, a banking assistant. The user {first_name} just asked a non-banking question that you must politely but firmly decline to answer.
+            non_banking_prompt = f"""You are Kora, a banking assistant. The user {first_name} just asked a non-banking question that you must politely but firmly decline to answer.
 
             Their question: "{user_message}"
 
@@ -1610,183 +1722,236 @@ class BankingAIAgent:
             3. Clearly state you cannot help with non-banking topics
             4. Redirect to specific banking services you can help with
             5. Keep it concise and professional
+            6. **BOLD** important banking services you offer
 
             Generate a response that maintains boundaries while being helpful about banking topics."""
-            
+
             try:
                 response = await llm.ainvoke([SystemMessage(content=non_banking_prompt)])
                 return response.content.strip()
             except:
-                return f"I'm a banking assistant, {first_name}, and I can only help with your account-related questions like checking balances, viewing transactions, analyzing spending, or transferring money. I don't have information about topics outside of banking. What banking question can I help you with today?"
+                return f"I'm a banking assistant, {first_name}, and I can only help with your account-related questions like **checking balances**, **viewing transactions**, **analyzing spending**, or **transferring money**. I don't have information about topics outside of banking. What **banking question** can I help you with today?"
 
-        # Use LLM to determine response format for banking queries (keep existing)
+        # CRITICAL FIX: Handle clarification needed for transfers
+        if "clarification_needed" in str(data) and data.get("clarification_needed"):
+            clarification_prompt = f"""You are Kora, a banking assistant. The user **{first_name}** asked to transfer money but there are multiple matching transactions.
+
+            USER REQUEST: "{user_message}"
+            MATCHING TRANSACTIONS: {json.dumps(data.get("matching_transactions", []))}
+            RECIPIENT: {data.get("recipient", "unknown")}
+
+            Your task:
+            1. Explain that you found multiple matching transactions
+            2. List each transaction clearly with **date**, **amount**, and **currency**
+            3. Ask them to specify which one they want to use
+            4. **Bold** all important information
+            5. Make it easy for them to identify and select
+
+            Example format:
+            "I found **multiple Foodpanda transactions**, **{first_name}**. Which one would you like to transfer 10% from?
+
+            **1.** June 19: **$18.71 USD**
+            **2.** May 14: **$24.10 USD** 
+            **3.** May 10: **$21.49 USD**
+            **4.** April 6: **$16.10 USD**
+
+            Please specify by saying **'the first one'**, **'the $24.10 transaction'**, **'the May 14 one'**, etc."
+
+            Generate a clear clarification request with proper **bold formatting**.
+            """
+            
+            try:
+                response = await llm.ainvoke([SystemMessage(content=clarification_prompt)])
+                return response.content.strip()
+            except Exception as e:
+                logger.error(f"Error generating clarification response: {e}")
+                # Fallback clarification
+                transactions = data.get("matching_transactions", [])
+                transaction_list = []
+                for i, tx in enumerate(transactions, 1):
+                    date = tx.get("date", "Unknown date")
+                    amount = tx.get("amount", 0)
+                    currency = tx.get("currency", "USD")
+                    transaction_list.append(f"**{i}.** {date}: **${amount} {currency}**")
+                
+                transactions_text = "\n".join(transaction_list)
+                
+                return f"I found **multiple Foodpanda transactions**, **{first_name}**. Which one would you like to transfer from?\n\n{transactions_text}\n\nPlease specify which transaction you'd like to use."
+
+        # Use LLM to determine response approach
         response_format_instruction = await self._determine_response_format_with_llm(user_message, data, context_state)
         
-        # FIXED system prompt - NO ASTERISKS AT ALL
-        system_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, and to-the-point. NEVER use asterisks (*) in any form.
+        system_prompt = f"""You are Kora, a professional banking assistant. Provide helpful, natural responses to banking queries with proper formatting and highlighting.
 
-        CRITICAL RESPONSE FORMAT:
-        FIRST LINE MUST ALWAYS BE: "Hello [FirstName]! [brief context-appropriate greeting]"
-
-        RESPONSE FORMAT RULES (CRITICAL):
         {response_format_instruction}
-
-        CHATGPT-STYLE FORMATTING RULES (MANDATORY - ZERO ASTERISKS):
-
-        TRANSACTION HISTORY (DIRECT BULLET POINT STYLE):
-        - After greeting, header: "Here are your last [X] transactions:"
-        - Use bullet points (•) for each transaction
-        - Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
-        - NO narrative explanation of each transaction
-        - End with: "Let me know if you'd like a filter (e.g., only credits, only food-related) or if you want to send money, download a statement, or something else."
-
-        BALANCE RESPONSES (DIRECT STYLE):
-        - After greeting: "Account Balance: [Currency] [Amount] As of: [Date]"
-        - Add helpful follow-up: "Is there anything else I can help you with?"
-
-        VERIFICATION RESPONSES (STRUCTURED):
-        - After greeting: "Verification successful. Thank you, your identity has been verified."
-        - "Please answer any two of the following questions:"
-        - Number the verification steps clearly
-
-        TRANSFER RESPONSES (DIRECT CONFIRMATION):
-        - After greeting: "Success! You have successfully transferred [Currency] [Amount] to [Recipient]."
-        - "Reference: [reference] Date: [date] Updated Balance: [Currency] [Amount]"
-        - "Would you like to do anything else? (View transactions, check spending, send more money?)"
-
-        ACCOUNT CONFIRMATION (STRUCTURED):
-        - After greeting: "Account confirmed! Welcome [name], you're now connected to account [masked_account]"
-        - List services with bullet points
-        - "What can I help you with today?"
-
-        SPENDING ANALYSIS (STRUCTURED DATA):
-        - After greeting, use clear headers with normal text formatting
-        - Present data in structured format with bullet points
-        - Include totals and percentages where relevant
-        - No long explanations, just the data
-
-        ERROR HANDLING (PROFESSIONAL & BRIEF):
-        - After greeting: "Error: [Brief error explanation]"
-        - Provide clear next steps
-        - Keep it concise and professional
-
-        GENERAL STYLE RULES:
-        1. ALWAYS START WITH GREETING: "Hello [FirstName]! [context]"
-        2. Be Direct: Don't explain every detail, just present the data
-        3. Use Structure: Bullet points, clear headers, organized layout
-        4. NO ASTERISKS: Never use any asterisk (*) symbols anywhere in your response
-        5. End with Options: Always provide helpful follow-up choices
-        6. No Narrative: Don't tell a story, just show the information
-        7. Consistent Format: Same structure for similar types of responses
 
         CURRENT CONTEXT: {context_state}
         USER'S MESSAGE: "{user_message}"
-        AVAILABLE DATA: {json.dumps(data) if data else "No specific data"}
 
         CONVERSATION HISTORY (Your memory):
         {conversation_history}
+        DATA AVAILABLE: {json.dumps(data) if data else "No data available"}
 
-        CONTEXTUAL RESPONSE RULES (CRITICAL):
-            1. Reference Previous Data: If you previously showed transactions, balances, or spending - reference them specifically
-            - "Looking at those 5 transactions I showed you..."
-            - "From your June spending that we just discussed..."
-            - "Referring back to your balance of $2,341..."
+        **CRITICAL FORMATTING RULES - ALWAYS APPLY:**
 
-            2. Build on Previous Context: Make it feel like a continuous conversation
-            - "Now looking at that data..." 
-            - "Based on what we just saw..."
-            - "Following up on those transactions..."
+        1. **BOLD FORMATTING** for important keywords and actions:
+        - **CNIC** (when requesting CNIC verification)
+        - **OTP** (when requesting OTP)
+        - **Account numbers** (like ***-***-1234)
+        - **Important amounts** ($1,554.41, PKR 25,000)
+        - **Action words** (transfer, send, confirm, verify, check)
+        - **Banking terms** (balance, transactions, spending, account)
+        - **Currency codes** (**USD**, **PKR**, **CAD**)
+        - **Recipient names** when transferring money
+        - **Next steps** user needs to take
 
-            3. Use Specific Numbers/Details: Reference exact amounts, dates, descriptions from previous messages
-            - Instead of: "Your spending was high"
-            - Say: "Your $550 spending on groceries that I mentioned"
+        2. **STRUCTURE RESPONSES** clearly:
+        - Use line breaks for readability
+        - Separate different types of information
+        - Highlight key numbers and amounts
+        - Make action items stand out
 
-            4. Natural Conversation Flow: 
-            - If user asks follow-up questions, acknowledge the connection
-            - If showing new data, relate it to previous context when relevant
-            - Make responses feel like you remember everything
+        3. **EXAMPLES OF PROPER FORMATTING:**
 
-            5. Contextual Greetings: 
-            - Don't always greet the same way
-            - Sometimes skip greetings for follow-ups: "That most expensive transaction was..."
-            - For continuing conversations: "{first_name}, looking at that data..."
+        CNIC Request: "Please provide your **CNIC** in the format **12345-1234567-1**"
+        
+        OTP Request: "Please enter your **OTP** (**4-6 digits**) to verify the transfer"
+        
+        Balance Response: "Your current account balance is **$1,554.41 USD** as of July 30th"
+        
+        Transfer Confirmation: "Transfer **$15.54 USD** to **Ahmed Abrar**? Reply **yes** to confirm or **no** to cancel"
+        
+        Account Selection: "Account ***-***-1234** confirmed! Welcome **{first_name}**!"
 
-            6. Balance Query Responses:
-            - If context mentions "balance at specific date", focus on the date and balance amount
-            - If context mentions "average balance", explain the calculation period
-            - Always include currency information for balance responses
-            - Reference the specific date or period requested
+        4. **TABULAR DATA FORMATTING RULES:**
+        When presenting data that would be clearer in tabular format, use markdown tables:
 
-            7. NO TRANSACTIONS OR AMOUNT IS ZERO:
-            - If there are no transactions or if total amount is equal to 0, provide a clear message like "No transactions/amount found for this period/category."
+        For TRANSACTIONS:
+        | Date | Description | Type | Amount | Currency | Balance |
+        |------|-------------|------|--------|----------|---------|
+        | 2025-07-30 | Netflix | Debit | **15.99** | **USD** | **1,234.56** |
+        | 2025-07-29 | Salary | Credit | **3,000.00** | **USD** | **1,250.55** |
 
+        For SPENDING BREAKDOWN:
+        | Category | Amount | Percentage | Count |
+        |----------|--------|------------|-------|
+        | Food | **450.00 USD** | **35%** | 12 |
+        | Entertainment | **200.00 USD** | **15%** | 5 |
 
-            PERSONALITY GUIDELINES:
-            - Be conversational like you're having an ongoing chat
-            - Show you remember previous parts of conversation
-            - Reference specific data points naturally
-            - Make each response build on the previous conversation
-            - Avoid repetitive patterns - vary your language
+        For CURRENCY CONVERSION:
+        | From | To | Amount | Converted | Rate |
+        |------|----|---------|---------|----- |
+        | **USD** | **PKR** | **100** | **27,800** | **278.00** |
 
-            CRITICAL: NEVER USE ASTERISKS (*) IN ANY FORM. Use plain text only.
+        Use tables when:
+        - Showing multiple transactions (more than 2-3)
+        - Displaying spending breakdowns by category
+        - Presenting currency conversions
+        - Comparing data across periods
+        - Any structured data that benefits from column organization
 
-            Generate a contextual response that feels like a natural continuation of your ongoing conversation with {first_name}."""
+        For single values (like balance inquiries), use natural text format with bold highlighting.
+
+        5. **CONTEXTUAL RESPONSE RULES:**
+        1. Reference Previous Data: If you previously showed transactions, balances, or spending - reference them specifically
+        2. Build on Previous Context: Make it feel like a continuous conversation
+        3. Use Specific Numbers/Details: Reference exact amounts, dates, descriptions from previous messages
+        4. Natural Conversation Flow: 
+        - If user asks follow-up questions, acknowledge the connection
+        - If showing new data, relate it to previous context when relevant
+        - Make responses feel like you remember everything
+
+        6. Contextual Greetings: 
+        - Don't always greet the same way
+        - Sometimes skip greetings for follow-ups
+        - For continuing conversations: "**{first_name}**, looking at that data..."
+
+        7. Balance Query Responses:
+        - If context mentions "balance at specific date", focus on the date and balance amount
+        - If context mentions "average balance", explain the calculation period
+        - Always include currency information for balance responses
+        - Reference the specific date or period requested
+
+        8. NO TRANSACTIONS OR AMOUNT IS ZERO:
+        - If there are no transactions or if total amount is equal to 0, provide a clear message like "**No transactions/amount found** for this period/category."
+
+        9. **HIGHLIGHT NEXT STEPS:**
+        - Make it crystal clear what the user needs to do next
+        - Use bold formatting for action items
+        - Example: "**Next step:** Please enter your **OTP** to proceed"
+        - Example: "**To continue:** Select your **account number** or say **'first account'**"
+
+        **PERSONALITY GUIDELINES:**
+        - Be conversational like you're having an ongoing chat
+        - Show you remember previous parts of conversation
+        - Reference specific data points naturally
+        - Make each response build on the previous conversation
+        - Avoid repetitive patterns - vary your language
+        - **ALWAYS** use proper bold formatting for important elements
+
+        Generate a natural, well-formatted response that feels like a continuation of your ongoing conversation with **{first_name}**."""
         
         try:
             response = await llm.ainvoke([SystemMessage(content=system_prompt)])
             return response.content.strip()
         except Exception as e:
-            logger.error(f"Error generating contextual response: {e}")
-            return f"I'm having some technical difficulties right now, {first_name}. Could you try that again?"
-
-
-
+            logger.error(f"Error generating natural response: {e}")
+            return f"I'm having some technical difficulties right now, **{first_name}**. Could you try that again?"
 
     async def generate_contextual_banking_response(self, query_result: Any, user_message: str, first_name: str, memory: ConversationBufferMemory, intent: str) -> str:
-        """Generate banking responses with ChatGPT-style direct, structured formatting (no asterisks)."""
+        """Generate natural banking responses with bold formatting and highlighting."""
         
         conversation_history = self._get_context_summary(memory.chat_memory.messages)
-        
-        # Enhanced banking context prompt with CHATGPT DIRECT STYLE (NO ASTERISKS)
-        banking_context_prompt = f"""You are Sage, a professional banking assistant. Generate responses in ChatGPT banking style: direct, structured, to-the-point. NEVER use asterisks (*) in any form.
 
-        
-            
-            CHATGPT-STYLE FORMATTING (MANDATORY - NO ASTERISKS):
+        banking_context_prompt = f"""You are Kora, a professional banking assistant. Generate natural, helpful responses to banking queries with proper formatting.
 
-            TRANSACTION LISTS (DIRECT BULLET STYLE):
-            Header: "Here are your last [X] transactions:"
-            Format: "• [Date] | [Description] | [Type] | [Amount] [Currency] | Balance: [Balance]"
-            Footer: "Let me know if you'd like a filter or if you want to send money, download a statement, or something else."
+            **CRITICAL FORMATTING RULES - ALWAYS APPLY:**
 
-            BALANCE FORMAT: 
-            "Account Balance: PKR 245,600.00 As of: 29th July 2025"
+            1. **BOLD FORMATTING** for important elements:
+            - **Account numbers** (***-***-1234)
+            - **Important amounts** (**$1,554.41**, **PKR 25,000**)
+            - **Currency codes** (**USD**, **PKR**, **CAD**)
+            - **Action words** (**transfer**, **check**, **analyze**)
+            - **Banking terms** (**balance**, **transactions**, **spending**)
+            - **Next steps** and action items
+            - **Recipient names** in transfers
+            - **Dates** and **timeframes**
 
-            TRANSFER FORMAT: 
-            "Success! You have successfully transferred PKR 1,000 to Ali Raza"
+            2. **TABULAR DATA FORMATTING RULES:**
+            When presenting data that would be clearer in tabular format, use markdown tables:
 
-            VERIFICATION FORMAT: 
-            "Verification successful. Thank you, your identity has been verified."
+            For TRANSACTIONS:
+            | Date | Description | Type | Amount | Currency | Balance |
+            |------|-------------|------|--------|----------|---------|
+            | 2025-07-30 | Netflix | Debit | **15.99** | **USD** | **1,234.56** |
+            | 2025-07-29 | Salary | Credit | **3,000.00** | **USD** | **1,250.55** |
 
-            SPENDING ANALYSIS: 
-            Use structured data presentation with clear headers and bullet points
+            For SPENDING BREAKDOWN:
+            | Category | Amount | Percentage | Count |
+            |----------|--------|------------|-------|
+            | Food | **450.00 USD** | **35%** | 12 |
+            | Entertainment | **200.00 USD** | **15%** | 5 |
+
+            Use tables when showing multiple transactions, spending breakdowns, or structured data.
+
+            3. **STRUCTURE RESPONSES** clearly with line breaks and highlighting
 
             CONVERSATION HISTORY: {conversation_history}
             USER'S REQUEST: "{user_message}"
             INTENT: {intent}
             QUERY RESULTS: {json.dumps(query_result) if query_result else "No data"}
 
-            RESPONSE RULES:
-            1. Be Direct: Present data clearly without narrative explanation
-            2. Use Structure: Bullet points, clear headers, organized layout
-            3. Reference Context: Connect to previous conversation when relevant
-            4. End with Options: Provide helpful follow-up choices
-            5. ChatGPT Style: Professional, structured, to-the-point
-            6. NO ASTERISKS: Never use asterisk (*) symbols anywhere in your response
+            **RESPONSE RULES:**
+            1. Be Natural: Present information in a conversational way
+            2. Reference Context: Connect to previous conversation when relevant
+            3. Be Helpful: Provide useful follow-up suggestions
+            4. Stay Professional: Maintain banking assistant professionalism
+            5. **FORMAT PROPERLY**: Use bold formatting for all important elements
+            6. **HIGHLIGHT NUMBERS**: Make amounts, balances, and counts stand out
+            7. **CLEAR ACTIONS**: Bold any next steps or action items
+
+            Generate a natural, well-formatted response that addresses **{first_name}**'s banking needs."""
         
-
-            Generate a direct, structured response that presents the banking information clearly in ChatGPT style. NEVER use asterisks in any form."""
-
         try:
             response = await llm.ainvoke([SystemMessage(content=banking_context_prompt)])
             
@@ -1798,8 +1963,8 @@ class BankingAIAgent:
         except Exception as e:
             logger.error(f"Error generating contextual banking response: {e}")
             return await self.generate_natural_response(ContextStates.ERROR_OCCURRED, {"error": str(e)}, user_message, first_name, conversation_history)
-            
-                    
+
+                        
     def is_clearly_non_banking_query(self, user_message: str, conversation_history: str = "") -> bool:
         """Enhanced non-banking detection with proper blocking logic."""
         try:
@@ -1861,8 +2026,6 @@ class BankingAIAgent:
             logger.error(f"Error in non-banking detection: {e}")
             # Safe fallback - allow if error (better for banking users)
             return False
-
-
 
     def _tier3_keyword_analysis(self, user_message: str, user_lower: str) -> bool:
         """Tier 3: Keyword-based analysis for clearly non-banking topics."""
@@ -1986,38 +2149,38 @@ class BankingAIAgent:
             return False
 
     async def handle_non_banking_query(self, user_message: str, first_name: str) -> str:
-        """Handle clearly non-banking related queries with firm but polite decline."""
+        """Handle non-banking queries with enhanced formatting."""
         try:
-            non_banking_prompt = f"""You are Sage, a strict banking assistant. The user {first_name} asked a non-banking question that you must firmly refuse to answer.
+            non_banking_prompt = f"""You are Kora, a strict banking assistant. The user **{first_name}** asked a non-banking question that you must firmly refuse to answer.
 
             Their question: "{user_message}"
 
             Response rules:
-            1. Be polite but VERY firm - you ONLY handle banking account queries
-            2. Don't provide ANY information about the non-banking topic - not even hints
-            3. Immediately redirect to banking services only
-            4. Keep response short and direct
-            5. Don't apologize excessively - be confident in your banking focus
+            1. Be polite but VERY firm - you **ONLY** handle **banking account queries**
+            2. Don't provide ANY information about the non-banking topic
+            3. Immediately redirect to **banking services** only
+            4. **Bold** all banking services you offer
+            5. Keep response short and direct
+            6. **Highlight** what you CAN do for them
 
-            Banking services you offer:
-            - Check account balance and financial capacity
-            - View transaction history and spending analysis  
-            - Transfer money and make payments
-            - Currency conversion for banking amounts
-            - Financial planning and budgeting help
+            Banking services to **bold**:
+            - **Check account balance**
+            - **View transaction history**
+            - **Transfer money**
+            - **Currency conversion**
+            - **Financial planning**
 
-            Generate a firm but polite refusal that maintains strict banking boundaries."""
+            Generate a firm but polite refusal with proper **bold formatting**."""
             
             try:
                 response = await llm.ainvoke([SystemMessage(content=non_banking_prompt)])
                 return response.content.strip()
             except:
-                return f"I'm a banking assistant, {first_name}, and I can only help with your bank account questions like checking your balance, viewing transactions, analyzing spending, or transferring money. I don't provide information about other topics. What banking question can I help you with?"
+                return f"I'm a **banking assistant**, **{first_name}**, and I can only help with your **bank account questions** like **checking your balance**, **viewing transactions**, **analyzing spending**, or **transferring money**. I don't provide information about other topics. **What banking question can I help you with?**"
                 
         except Exception as e:
             logger.error(f"Error in non-banking response: {e}")
-            return f"I'm a banking assistant, {first_name}, and I can only help with banking questions related to your account. What banking question can I help you with today?"
-
+            return f"I'm a **banking assistant**, **{first_name}**, and I can only help with **banking questions** related to your account. **What banking question can I help you with today?**"
 
     # === FALLBACK METHODS ===
     async def _reason_about_query(self, user_message: str, memory: ConversationBufferMemory, 
@@ -2440,7 +2603,7 @@ class BankingAIAgent:
                     target_amount = float(amount_match.group(1).replace(',', '')) if amount_match else 1000000
                     
                     balance_info = data.get("user", {})
-                    current_balance = balance_info.get("current_balance_pkr", 0)
+                    current_balance = balance_info.get("current_balance_usd", 0) or balance_info.get("current_balance_pkr", 0)
                     needed = target_amount - current_balance
                     
                     goal_data = {

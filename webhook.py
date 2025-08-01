@@ -3,24 +3,24 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 import httpx
 from prompts import account_selection_prompt
-from langchain_core.messages import SystemMessage
 import aiohttp
 from openai import OpenAI
+import os
+import requests
+import re
+from typing import Dict, List
+from translation_service import translation_service
+import time
+import logging
+from ai_agent import BankingAIAgent
 
-from ai_agent import llm
 
-# Import constants
 from constants import (
     VerificationStages, GreetingWords, ConfirmationWords, ExitCommands,
     Limits, WebhookConfig, RegexPatterns, Currencies, StatusMessages,
     TransferSignals, DatabaseFields, LLMConfig
 )
 
-import os
-import requests
-import re
-from typing import Dict, Any, List
-from translation_service import translation_service
 from state import (
     authenticated_users, processed_messages, periodic_cleanup,
     get_user_verification_stage, set_user_verification_stage,
@@ -30,30 +30,23 @@ from state import (
     is_transfer_confirmation_pending, get_user_accounts_with_details, set_user_accounts_with_details,
     set_user_language, get_user_language, get_user_last_language, clear_user_language
 )
-import time
-import logging
-from datetime import datetime
-from ai_agent import BankingAIAgent
 
-# Set up logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 app = FastAPI()
-
 VERIFY_TOKEN = WebhookConfig.VERIFY_TOKEN
-
-
-PAGE_ACCESS_TOKEN = "EAAOqZBb1DZCWYBPAP0Nhv5ZBWpiL6hboNQXrbnp1NKardW6jeCyJbXVKNR0MCooUu0H7xaINNxHLsgM6ZAddqPHTp7J17Kjl9AjqZAZB0xlyNLIIsA9q3VVtCIva0MZA3OQKKUZAZBP4qZBZBfVMr3KID33fAmI7aS4FUxDUczo6HrSW1MbOmoyIw3F2yEAITdwMTt6yYZCw"
-
-# Add this after your other global variables (around line 40-50, after BACKEND_URL)
 BACKEND_URL = WebhookConfig.BACKEND_URL
-
-# Initialize AI Agent for natural responses
 ai_agent = BankingAIAgent()
-
-# Add voice message deduplication cache
 voice_message_last_time = {}
+VOICE_MESSAGE_COOLDOWN = 15  # seconds
+webhook_message_cache = {}
+user_last_message_time = {}
+voice_message_cache = {}
+user_request_cache = {}
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]) 
+PAGE_ACCESS_TOKEN = "EAAbUiG1U0wYBPBHf5hXMclgmLXIs2O8pKbqt6Gc3uOW43NxC1ElQAKexFvBjseAfVZB1MGBLhsguN0IR155ZBwFx3fVDMzeDhSTzKjVJoTBuWSirs6m5FRQWbAR9foNMtcz2VUEagRCvZCazRtyZA6nGjZBMIySiUdO7xHWdU7ZA30nJXKI87bx5MWiZAG4AQKkVPFirDBlbAZDZD"
+
 
 @app.get("/webhook")
 async def webhook(request: Request):
@@ -67,11 +60,6 @@ async def webhook(request: Request):
     else:
         raise HTTPException(status_code=403, detail="Invalid verification token.")
 
-# Add to webhook.py constants
-VOICE_MESSAGE_COOLDOWN = 15  # seconds
-
-# In receive_message function
-webhook_message_cache = {}
 
 @app.post("/webhook")
 async def receive_message(request: Request):
@@ -79,21 +67,16 @@ async def receive_message(request: Request):
         data = await request.json()
     except:
         return JSONResponse(content={"error": "Invalid JSON"}, status_code=400)
-    
     if "entry" not in data:
         return JSONResponse(content={"status": "ok"})
-
     for entry in data.get("entry", []):
         for messaging_event in entry.get("messaging", []):
             sender_id = messaging_event["sender"]["id"]
-
             if "message" in messaging_event:
-                # Add webhook-level deduplication
                 message_id = messaging_event["message"].get("mid")
                 if message_id and message_id in webhook_message_cache:
                     logger.info(f"🔄 WEBHOOK: Duplicate message blocked at webhook level: {message_id}")
                     continue
-                
                 if message_id:
                     webhook_message_cache[message_id] = time.time()
                     
@@ -131,7 +114,6 @@ async def receive_message(request: Request):
 
     return JSONResponse(content={"status": "ok"})
 
-voice_message_cache = {}
 async def handle_voice_message(sender_id: str, audio_url: str) -> str:
     """Handle voice messages with deduplication and proper language handling."""
     try:
@@ -218,9 +200,6 @@ async def handle_voice_message(sender_id: str, audio_url: str) -> str:
         logger.error(f"Error handling voice message: {e}")
         return "Sorry, I couldn't process your voice message. Please try typing your question instead."
     
-
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]) 
-
 async def transcribe_audio(audio_file_path: str) -> str:
     """Transcribe audio using OpenAI's new SDK (>=1.0.0)"""
     try:
@@ -282,7 +261,7 @@ async def process_multilingual_message(sender_id: str, user_message: str) -> str
         # Process the English message through existing flow
         english_response = await process_user_message(sender_id, english_message)
         
-        # Translate response back to user's ORIGINAL language (not re-detected)
+
         if original_detected_language != 'en':
             final_response = translation_service.translate_from_english(english_response, original_detected_language)
             logger.info({
@@ -311,166 +290,7 @@ async def process_multilingual_message(sender_id: str, user_message: str) -> str
         # Fallback to English processing
         return await process_user_message(sender_id, user_message)
     
-user_last_message_time = {}
 
-def is_greeting_message(message: str) -> bool:
-    """Check if the message is a greeting."""
-    message_lower = message.lower().strip()
-    
-    # Check if message is exactly a greeting or starts with greeting
-    for greeting in GreetingWords.BASIC_GREETINGS:
-        if message_lower == greeting or message_lower.startswith(greeting + " "):
-            return True
-    
-    # Check for common greeting patterns
-    for pattern in RegexPatterns.GREETING_PATTERNS:
-        if re.match(pattern, message_lower):
-            return True
-    
-    return False
-
-async def get_account_details_from_backend(accounts: List[str]) -> List[Dict]:
-    """Get detailed account information including currency from backend."""
-    account_details = []
-    
-    for account in accounts:
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{BACKEND_URL}/user_balance",
-                    json={DatabaseFields.ACCOUNT_NUMBER: account}
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    if result["status"] == StatusMessages.SUCCESS:
-                        user_info = result["user"]
-                        account_details.append({
-                            DatabaseFields.ACCOUNT_NUMBER: account,
-                            "currency": user_info.get(DatabaseFields.ACCOUNT_CURRENCY, Currencies.PKR_LOWER).upper(),
-                            "balance_usd": user_info.get("current_balance_usd", 0),
-                            "balance_pkr": user_info.get("current_balance_pkr", 0)
-                        })
-        except Exception as e:
-            logger.error(f"Error getting account details for {account}: {e}")
-            # Add account with default info if API fails
-            account_details.append({
-                DatabaseFields.ACCOUNT_NUMBER: account,
-                "currency": "UNKNOWN",
-                "balance_usd": 0,
-                "balance_pkr": 0
-            })
-    
-    return account_details
-
-async def smart_account_selection(user_input: str, account_details: List[Dict]) -> str:
-    """LLM-based smart account selection for natural language understanding."""
-    try:
-        # Format account details for the prompt
-        account_info = []
-        for i, account in enumerate(account_details, 1):
-            account_info.append(
-                f"{i}. Account: {account[DatabaseFields.ACCOUNT_NUMBER]}, Currency: {account['currency']}, "
-                f"Balance: {account.get('balance_pkr', 0)} {Currencies.PKR} / {account.get('balance_usd', 0)} {Currencies.USD}"
-            )
-        
-        account_details_str = "\n".join(account_info)
-       
-        # Use LLM to understand the selection
-        response = await ai_agent.llm.ainvoke([
-            {
-                "role": "system", 
-                "content": account_selection_prompt.format(
-                    user_input=user_input,
-                    account_details=account_details_str
-                )
-            }
-        ])
-        
-        selected_account = response.content.strip()
-        
-        # Validate the response
-        if selected_account == "NO_MATCH":
-            logger.info(f"LLM could not match account selection: {user_input}")
-            return None
-            
-        # Verify the account exists in our list
-        for account in account_details:
-            if account[DatabaseFields.ACCOUNT_NUMBER] == selected_account:
-                logger.info(f"LLM selected account: {selected_account} for input: {user_input}")
-                return selected_account
-        
-        # Fallback: try partial matching if LLM returned partial number
-        if selected_account.isdigit():
-            for account in account_details:
-                if account[DatabaseFields.ACCOUNT_NUMBER].endswith(selected_account):
-                    logger.info(f"LLM partial match: {account[DatabaseFields.ACCOUNT_NUMBER]} for input: {user_input}")
-                    return account[DatabaseFields.ACCOUNT_NUMBER]
-        
-        logger.warning(f"LLM returned invalid account: {selected_account} for input: {user_input}")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error in LLM account selection: {e}")
-        # Fallback to original logic for critical errors
-        return smart_account_selection_fallback(user_input, account_details)
-
-def smart_account_selection_fallback(user_input: str, account_details: List[Dict]) -> str:
-    """Fallback account selection logic."""
-    user_input_clean = user_input.strip()
-    
-    # Check if it's a full account number match first
-    for account in account_details:
-        if account[DatabaseFields.ACCOUNT_NUMBER] == user_input_clean:
-            logger.info(f"Fallback: Exact account number match: {user_input_clean}")
-            return account[DatabaseFields.ACCOUNT_NUMBER]
-    
-    # Check for partial number matches (last 4, 5, 6+ digits)
-    if user_input_clean.isdigit() and len(user_input_clean) >= 4:
-        for account in account_details:
-            if account[DatabaseFields.ACCOUNT_NUMBER].endswith(user_input_clean):
-                logger.info(f"Fallback: Partial match {user_input_clean} -> {account[DatabaseFields.ACCOUNT_NUMBER]}")
-                return account[DatabaseFields.ACCOUNT_NUMBER]
-    
-    user_input_lower = user_input_clean.lower()
-    
-    # Currency-based selection
-    if Currencies.USD_LOWER in user_input_lower or "dollar" in user_input_lower:
-        usd_accounts = [acc for acc in account_details if acc["currency"] == Currencies.USD]
-        if usd_accounts:
-            logger.info(f"Fallback: USD currency match -> {usd_accounts[0][DatabaseFields.ACCOUNT_NUMBER]}")
-            return usd_accounts[0][DatabaseFields.ACCOUNT_NUMBER]
-    
-    if Currencies.PKR_LOWER in user_input_lower or "rupee" in user_input_lower:
-        pkr_accounts = [acc for acc in account_details if acc["currency"] == Currencies.PKR]
-        if pkr_accounts:
-            logger.info(f"Fallback: PKR currency match -> {pkr_accounts[0][DatabaseFields.ACCOUNT_NUMBER]}")
-            return pkr_accounts[0][DatabaseFields.ACCOUNT_NUMBER]
-    
-    # Position-based selection
-    if any(word in user_input_lower for word in ["first", "1st", "one"]):
-        if account_details:
-            logger.info(f"Fallback: First account -> {account_details[0][DatabaseFields.ACCOUNT_NUMBER]}")
-            return account_details[0][DatabaseFields.ACCOUNT_NUMBER]
-    
-    if any(word in user_input_lower for word in ["second", "2nd", "two"]):
-        if len(account_details) > 1:
-            logger.info(f"Fallback: Second account -> {account_details[1][DatabaseFields.ACCOUNT_NUMBER]}")
-            return account_details[1][DatabaseFields.ACCOUNT_NUMBER]
-    
-    logger.warning(f"Fallback: No match found for input: {user_input_clean}")
-    return None
-
-def is_confirmation_positive(message: str) -> bool:
-    """Check if user message is a positive confirmation."""
-    message_lower = message.lower().strip()
-    return any(word in message_lower for word in ConfirmationWords.POSITIVE)
-
-def is_confirmation_negative(message: str) -> bool:
-    """Check if user message is a negative confirmation."""
-    message_lower = message.lower().strip()
-    return any(word in message_lower for word in ConfirmationWords.NEGATIVE)
-
-user_request_cache = {}
 async def process_user_message(sender_id: str, user_message: str) -> str:
     """Process user message with enhanced LLM-based exit detection."""
     
@@ -586,6 +406,163 @@ async def process_user_message(sender_id: str, user_message: str) -> str:
         # Don't cache errors
         logger.error(f"Processing error: {e}")
         return "Sorry, there was an error processing your request."
+
+
+def is_greeting_message(message: str) -> bool:
+    """Check if the message is a greeting."""
+    message_lower = message.lower().strip()
+    
+    # Check if message is exactly a greeting or starts with greeting
+    for greeting in GreetingWords.BASIC_GREETINGS:
+        if message_lower == greeting or message_lower.startswith(greeting + " "):
+            return True
+    
+    # Check for common greeting patterns
+    for pattern in RegexPatterns.GREETING_PATTERNS:
+        if re.match(pattern, message_lower):
+            return True
+    return False
+
+async def get_account_details_from_backend(accounts: List[str]) -> List[Dict]:
+    """Get detailed account information including currency from backend."""
+    account_details = []
+    
+    for account in accounts:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{BACKEND_URL}/user_balance",
+                    json={DatabaseFields.ACCOUNT_NUMBER: account}
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    if result["status"] == StatusMessages.SUCCESS:
+                        user_info = result["user"]
+                        account_details.append({
+                            DatabaseFields.ACCOUNT_NUMBER: account,
+                            "currency": user_info.get(DatabaseFields.ACCOUNT_CURRENCY, Currencies.PKR_LOWER).upper(),
+                            "balance_usd": user_info.get("current_balance_usd", 0),
+                            "balance_pkr": user_info.get("current_balance_pkr", 0)
+                        })
+        except Exception as e:
+            logger.error(f"Error getting account details for {account}: {e}")
+            # Add account with default info if API fails
+            account_details.append({
+                DatabaseFields.ACCOUNT_NUMBER: account,
+                "currency": "UNKNOWN",
+                "balance_usd": 0,
+                "balance_pkr": 0
+            })
+    return account_details
+
+async def smart_account_selection(user_input: str, account_details: List[Dict]) -> str:
+    """LLM-based smart account selection for natural language understanding."""
+    try:
+        # Format account details for the prompt
+        account_info = []
+        for i, account in enumerate(account_details, 1):
+            account_info.append(
+                f"{i}. Account: {account[DatabaseFields.ACCOUNT_NUMBER]}, Currency: {account['currency']}, "
+                f"Balance: {account.get('balance_pkr', 0)} {Currencies.PKR} / {account.get('balance_usd', 0)} {Currencies.USD}"
+            )
+        
+        account_details_str = "\n".join(account_info)
+       
+        # Use LLM to understand the selection
+        response = await ai_agent.llm.ainvoke([
+            {
+                "role": "system", 
+                "content": account_selection_prompt.format(
+                    user_input=user_input,
+                    account_details=account_details_str
+                )
+            }
+        ])
+        
+        selected_account = response.content.strip()
+        
+        # Validate the response
+        if selected_account == "NO_MATCH":
+            logger.info(f"LLM could not match account selection: {user_input}")
+            return None
+            
+        # Verify the account exists in our list
+        for account in account_details:
+            if account[DatabaseFields.ACCOUNT_NUMBER] == selected_account:
+                logger.info(f"LLM selected account: {selected_account} for input: {user_input}")
+                return selected_account
+        
+        # Fallback: try partial matching if LLM returned partial number
+        if selected_account.isdigit():
+            for account in account_details:
+                if account[DatabaseFields.ACCOUNT_NUMBER].endswith(selected_account):
+                    logger.info(f"LLM partial match: {account[DatabaseFields.ACCOUNT_NUMBER]} for input: {user_input}")
+                    return account[DatabaseFields.ACCOUNT_NUMBER]
+        
+        logger.warning(f"LLM returned invalid account: {selected_account} for input: {user_input}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error in LLM account selection: {e}")
+        # Fallback to original logic for critical errors
+        return smart_account_selection_fallback(user_input, account_details)
+
+def smart_account_selection_fallback(user_input: str, account_details: List[Dict]) -> str:
+    """Fallback account selection logic."""
+    user_input_clean = user_input.strip()
+    
+    # Check if it's a full account number match first
+    for account in account_details:
+        if account[DatabaseFields.ACCOUNT_NUMBER] == user_input_clean:
+            logger.info(f"Fallback: Exact account number match: {user_input_clean}")
+            return account[DatabaseFields.ACCOUNT_NUMBER]
+    
+    # Check for partial number matches (last 4, 5, 6+ digits)
+    if user_input_clean.isdigit() and len(user_input_clean) >= 4:
+        for account in account_details:
+            if account[DatabaseFields.ACCOUNT_NUMBER].endswith(user_input_clean):
+                logger.info(f"Fallback: Partial match {user_input_clean} -> {account[DatabaseFields.ACCOUNT_NUMBER]}")
+                return account[DatabaseFields.ACCOUNT_NUMBER]
+    
+    user_input_lower = user_input_clean.lower()
+    
+    # Currency-based selection
+    if Currencies.USD_LOWER in user_input_lower or "dollar" in user_input_lower:
+        usd_accounts = [acc for acc in account_details if acc["currency"] == Currencies.USD]
+        if usd_accounts:
+            logger.info(f"Fallback: USD currency match -> {usd_accounts[0][DatabaseFields.ACCOUNT_NUMBER]}")
+            return usd_accounts[0][DatabaseFields.ACCOUNT_NUMBER]
+    
+    if Currencies.PKR_LOWER in user_input_lower or "rupee" in user_input_lower:
+        pkr_accounts = [acc for acc in account_details if acc["currency"] == Currencies.PKR]
+        if pkr_accounts:
+            logger.info(f"Fallback: PKR currency match -> {pkr_accounts[0][DatabaseFields.ACCOUNT_NUMBER]}")
+            return pkr_accounts[0][DatabaseFields.ACCOUNT_NUMBER]
+    
+    # Position-based selection
+    if any(word in user_input_lower for word in ["first", "1st", "one"]):
+        if account_details:
+            logger.info(f"Fallback: First account -> {account_details[0][DatabaseFields.ACCOUNT_NUMBER]}")
+            return account_details[0][DatabaseFields.ACCOUNT_NUMBER]
+    
+    if any(word in user_input_lower for word in ["second", "2nd", "two"]):
+        if len(account_details) > 1:
+            logger.info(f"Fallback: Second account -> {account_details[1][DatabaseFields.ACCOUNT_NUMBER]}")
+            return account_details[1][DatabaseFields.ACCOUNT_NUMBER]
+    
+    logger.warning(f"Fallback: No match found for input: {user_input_clean}")
+    return None
+
+def is_confirmation_positive(message: str) -> bool:
+    """Check if user message is a positive confirmation."""
+    message_lower = message.lower().strip()
+    return any(word in message_lower for word in ConfirmationWords.POSITIVE)
+
+def is_confirmation_negative(message: str) -> bool:
+    """Check if user message is a negative confirmation."""
+    message_lower = message.lower().strip()
+    return any(word in message_lower for word in ConfirmationWords.NEGATIVE)
+
 
 async def handle_cnic_verification(sender_id: str, user_message: str) -> str:
     """Handle CNIC verification with flexible input format and non-banking query protection."""
@@ -786,7 +763,6 @@ async def handle_account_selection(sender_id: str, user_message: str) -> str:
             return await ai_agent.handle_error_gracefully(e, user_message, first_name, "account_selection")
     
     else:
-        # No smart selection match, provide guidance with LLM help
         try:
             # Use AI agent to provide helpful guidance
             context_state = "User account selection unclear, providing helpful guidance with available options"
