@@ -2,16 +2,24 @@
 
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
-import { FaUser, FaRobot } from "react-icons/fa";
+import {
+  FaUser,
+  FaRobot,
+  FaMicrophone,
+  FaStop,
+  FaPaperPlane,
+} from "react-icons/fa";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import { useVoiceRecording } from "../hooks/useVoiceRecording";
 
 interface Message {
   id: number;
   text: string;
   sender: "user" | "agent";
   timestamp: Date;
+  type?: "text" | "voice";
 }
 
 export default function BankingChat() {
@@ -21,17 +29,22 @@ export default function BankingChat() {
   const [senderId, setSenderId] = useState<string>("");
   const [isClient, setIsClient] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Voice recording hook
+  const { isRecording, startRecording, stopRecording, audioLevel } =
+    useVoiceRecording();
+
+  // ...existing useEffect code...
   useEffect(() => {
     setIsClient(true);
     setSenderId(
       `web-user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     );
 
-    // Add initial message after hydration
     setMessages([
       {
         id: 1,
@@ -42,7 +55,6 @@ export default function BankingChat() {
     ]);
   }, []);
 
-  // Separate useEffect for scroll handling
   useEffect(() => {
     const handleScroll = () => {
       setIsScrolled(window.scrollY > 50);
@@ -62,7 +74,6 @@ export default function BankingChat() {
 
   const sendToBackend = async (text: string): Promise<string> => {
     try {
-      // Use your existing chat_api.py endpoint
       const res = await axios.post("http://localhost:8080/api/chat", {
         sender_id: senderId,
         message: text,
@@ -74,6 +85,29 @@ export default function BankingChat() {
     }
   };
 
+  const sendVoiceToBackend = async (audioBlob: Blob): Promise<string> => {
+    try {
+      const formData = new FormData();
+      formData.append("audio", audioBlob, "voice-message.webm");
+      formData.append("sender_id", senderId);
+
+      const res = await axios.post(
+        "http://localhost:8080/api/voice",
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+          timeout: 30000, // 30 second timeout for voice processing
+        }
+      );
+      return res.data.reply;
+    } catch (error) {
+      console.error("Voice backend error:", error);
+      throw new Error("Voice processing error — please try again");
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!inputText.trim() || !senderId || !isClient) return;
 
@@ -82,6 +116,7 @@ export default function BankingChat() {
       text: inputText,
       sender: "user",
       timestamp: new Date(),
+      type: "text",
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -95,6 +130,7 @@ export default function BankingChat() {
         text: reply,
         sender: "agent",
         timestamp: new Date(),
+        type: "text",
       };
       setMessages((prev) => [...prev, agentMsg]);
     } catch (error) {
@@ -103,6 +139,7 @@ export default function BankingChat() {
         text: "Network error — is the backend running?",
         sender: "agent",
         timestamp: new Date(),
+        type: "text",
       };
       setMessages((prev) => [...prev, errMsg]);
     } finally {
@@ -110,13 +147,65 @@ export default function BankingChat() {
     }
   };
 
+  const handleVoiceMessage = async () => {
+    if (isRecording) {
+      // Stop recording and send
+      setIsProcessingVoice(true);
+      try {
+        const audioBlob = await stopRecording();
+        if (audioBlob) {
+          // Add user voice message to chat
+          const userMsg: Message = {
+            id: Date.now(),
+            text: "Voice message",
+            sender: "user",
+            timestamp: new Date(),
+            type: "voice",
+          };
+          setMessages((prev) => [...prev, userMsg]);
+          setIsTyping(true);
+
+          // Send to backend
+          const reply = await sendVoiceToBackend(audioBlob);
+          const agentMsg: Message = {
+            id: Date.now() + 1,
+            text: reply,
+            sender: "agent",
+            timestamp: new Date(),
+            type: "text",
+          };
+          setMessages((prev) => [...prev, agentMsg]);
+        }
+      } catch (error) {
+        const errMsg: Message = {
+          id: Date.now() + 1,
+          text: "Voice processing error — please try typing your message",
+          sender: "agent",
+          timestamp: new Date(),
+          type: "text",
+        };
+        setMessages((prev) => [...prev, errMsg]);
+      } finally {
+        setIsProcessingVoice(false);
+        setIsTyping(false);
+      }
+    } else {
+      // Start recording
+      try {
+        await startRecording();
+      } catch (error) {
+        console.error("Failed to start recording:", error);
+        alert("Could not access microphone. Please check permissions.");
+      }
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && !isRecording) {
       handleSendMessage();
     }
   };
 
-  // Custom components for markdown rendering
   const markdownComponents = {
     table: ({ children }: any) => (
       <div className="overflow-x-auto my-2 sm:my-4">
@@ -139,15 +228,21 @@ export default function BankingChat() {
       </td>
     ),
     tr: ({ children }: any) => <tr className="hover:bg-gray-50">{children}</tr>,
-    p: ({ children }: any) => <p className="mb-1 sm:mb-2 last:mb-0">{children}</p>,
+    p: ({ children }: any) => (
+      <p className="mb-1 sm:mb-2 last:mb-0">{children}</p>
+    ),
     strong: ({ children }: any) => (
       <strong className="font-semibold text-gray-900">{children}</strong>
     ),
     ul: ({ children }: any) => (
-      <ul className="list-disc pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">{children}</ul>
+      <ul className="list-disc pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
+        {children}
+      </ul>
     ),
     ol: ({ children }: any) => (
-      <ol className="list-decimal pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">{children}</ol>
+      <ol className="list-decimal pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
+        {children}
+      </ol>
     ),
     li: ({ children }: any) => <li className="text-gray-700">{children}</li>,
     code: ({ children, className }: any) => {
@@ -161,7 +256,9 @@ export default function BankingChat() {
       }
       return (
         <pre className="bg-gray-100 p-2 sm:p-3 rounded-lg overflow-x-auto my-1 sm:my-2">
-          <code className="text-xs sm:text-sm font-mono text-gray-800">{children}</code>
+          <code className="text-xs sm:text-sm font-mono text-gray-800">
+            {children}
+          </code>
         </pre>
       );
     },
@@ -172,17 +269,18 @@ export default function BankingChat() {
     ),
   };
 
-  // Don't render interactive elements until client-side hydration is complete
   if (!isClient) {
     return (
-      <div className="min-h-screen flex flex-col" style={{ backgroundColor: "#eee" }}>
-        {/* Fixed Header */}
+      <div
+        className="min-h-screen flex flex-col"
+        style={{ backgroundColor: "#eee" }}
+      >
+        {/* ...existing loading state... */}
         <header
           className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
             isScrolled ? "bg-white/80 backdrop-blur-md" : "bg-white"
           }`}
         >
-          {/* Logo on the left */}
           <div className="flex items-center">
             <div className="w-20 h-20 sm:w-40 sm:h-40 flex items-center justify-center">
               <img
@@ -192,7 +290,6 @@ export default function BankingChat() {
               />
             </div>
           </div>
-          {/* Centered title */}
           <div className="absolute left-1/2 transform -translate-x-1/2">
             <h1
               className="text-lg sm:text-2xl font-semibold"
@@ -206,12 +303,9 @@ export default function BankingChat() {
               <span className="sm:hidden">Kora AI</span>
             </h1>
           </div>
-
-          {/* Empty div to balance the layout */}
           <div className="w-8 sm:w-16"></div>
         </header>
 
-        {/* Loading state */}
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-4"></div>
@@ -223,43 +317,42 @@ export default function BankingChat() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: "#eee" }}>
-        {/* Fixed Header */}
-        <header
-          className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
-            isScrolled ? "bg-white/80 backdrop-blur-md" : "bg-white"
-          }`}
-        >
-          {/* Logo on the left */}
-          <div className="flex items-center">
-            <div className="w-20 h-20 sm:w-40 sm:h-40 flex items-center justify-center">
-              <img
-                src="/avz-logo.png"
-                alt="Avanza Logo"
-                className="w-20 h-20 sm:w-40 sm:h-40 object-contain"
-              />
-            </div>
+    <div
+      className="min-h-screen flex flex-col"
+      style={{ backgroundColor: "#eee" }}
+    >
+      {/* ...existing header code... */}
+      <header
+        className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
+          isScrolled ? "bg-white/80 backdrop-blur-md" : "bg-white"
+        }`}
+      >
+        <div className="flex items-center">
+          <div className="w-20 h-20 sm:w-40 sm:h-40 flex items-center justify-center">
+            <img
+              src="/avz-logo.png"
+              alt="Avanza Logo"
+              className="w-20 h-20 sm:w-40 sm:h-40 object-contain"
+            />
           </div>
-          {/* Centered title */}
-          <div className="absolute left-1/2 transform -translate-x-1/2">
-            <h1
-              className="text-lg sm:text-2xl font-semibold"
-              style={{
-                color: "#696969",
-                fontFamily: "'Open Sans', sans-serif",
-                letterSpacing: "0.025em",
-              }}
-            >
-              <span className="hidden sm:inline">Kora AI Banking</span>
-              <span className="sm:hidden">Kora AI</span>
-            </h1>
-          </div>
+        </div>
+        <div className="absolute left-1/2 transform -translate-x-1/2">
+          <h1
+            className="text-lg sm:text-2xl font-semibold"
+            style={{
+              color: "#696969",
+              fontFamily: "'Open Sans', sans-serif",
+              letterSpacing: "0.025em",
+            }}
+          >
+            <span className="hidden sm:inline">Kora AI Banking</span>
+            <span className="sm:hidden">Kora AI</span>
+          </h1>
+        </div>
+        <div className="w-8 sm:w-16"></div>
+      </header>
 
-          {/* Empty div to balance the layout */}
-          <div className="w-8 sm:w-16"></div>
-        </header>
-
-      {/* Chat Messages with top and bottom padding for fixed elements */}
+      {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 sm:py-6 pt-20 sm:pt-24 pb-20 sm:pb-24">
         <div className="max-w-full sm:max-w-6xl mx-auto space-y-3 sm:space-y-4">
           {messages.map((message) => (
@@ -269,10 +362,9 @@ export default function BankingChat() {
                 message.sender === "user" ? "justify-end" : "justify-start"
               } items-end space-x-2`}
             >
-              {/* Bot Avatar - only show for agent messages */}
               {message.sender === "agent" && (
                 <div
-                  className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 border-gray-400"
+                  className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0  border-gray-500"
                   style={{ backgroundColor: "#696969" }}
                 >
                   <FaRobot className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
@@ -282,17 +374,26 @@ export default function BankingChat() {
               <div
                 className={`px-3 sm:px-4 py-2 sm:py-3 rounded-2xl shadow-sm ${
                   message.sender === "user"
-                    ? "text-white border border-gray-200 text-right max-w-[85%] sm:max-w-2xl ml-auto"
-                    : "bg-white text-gray-800 border border-gray-200 text-left max-w-[85%] sm:max-w-4xl mr-auto"
+                    ? " bg-white text-gray-800 border border-gray-500 text-left max-w-[85%] sm:max-w-2xl ml-auto"
+                    : "bg-white text-gray-800 border border-gray-500 text-left max-w-[85%] sm:max-w-4xl mr-auto"
                 }`}
                 style={
                   message.sender === "user"
-                    ? { backgroundColor: "#696969" }
+                    ? { backgroundColor: "#cecaca" }
                     : {}
                 }
               >
                 {message.sender === "user" ? (
-                  <p className="text-xs sm:text-sm leading-relaxed text-right break-words">
+                  <p
+                    className={`text-xs sm:text-sm leading-relaxed text-left break-words ${
+                      message.type === "voice"
+                        ? "italic flex items-center gap-2"
+                        : ""
+                    }`}
+                  >
+                    {message.type === "voice" && (
+                      <FaMicrophone className="w-3 h-3" />
+                    )}
                     {message.text}
                   </p>
                 ) : (
@@ -309,8 +410,8 @@ export default function BankingChat() {
                 <span
                   className={`text-xs mt-1 block ${
                     message.sender === "user"
-                      ? "text-gray-100 text-right"
-                      : "text-gray-500 text-left"
+                      ? "text-gray-700 text-right"
+                      : "text-gray-500 text-right"
                   }`}
                 >
                   {message.timestamp.toLocaleTimeString([], {
@@ -320,10 +421,9 @@ export default function BankingChat() {
                 </span>
               </div>
 
-              {/* User Avatar - only show for user messages */}
               {message.sender === "user" && (
                 <div
-                  className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 border border-gray-400"
+                  className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 border border-gray-500"
                   style={{ backgroundColor: "#696969" }}
                 >
                   <FaUser className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
@@ -332,10 +432,10 @@ export default function BankingChat() {
             </div>
           ))}
 
-          {isTyping && (
+          {(isTyping || isProcessingVoice) && (
             <div className="flex justify-start items-end space-x-2">
               <div
-                className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 border border-gray-400"
+                className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 border  border-gray-500"
                 style={{ backgroundColor: "#696969" }}
               >
                 <FaRobot className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
@@ -360,7 +460,7 @@ export default function BankingChat() {
         </div>
       </div>
 
-      {/* Fixed Input Area */}
+      {/* Fixed Input Area with Voice Support */}
       <div className="fixed bottom-0 left-0 right-0 bg-white px-3 sm:px-4 py-3 sm:py-4 z-50 border-t border-gray-200">
         <div className="max-w-full sm:max-w-4xl mx-auto">
           <div className="flex items-center space-x-2 sm:space-x-3">
@@ -370,45 +470,121 @@ export default function BankingChat() {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Type your message here..."
-              className="flex-1 px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-gray-500 rounded-full focus:outline-none transition-colors text-black"
-              style={{ borderColor: inputText ? "#b11e6c" : "" }}
-              onFocus={(e) => (e.target.style.borderColor = "#b11e6c")}
-              onBlur={(e) =>
-                (e.target.style.borderColor = inputText ? "#b11e6c" : "")
+              placeholder={
+                isRecording ? "Recording..." : "Type your message here..."
               }
+              className="flex-1 px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-gray-500 rounded-full focus:outline-none transition-colors text-black"
+              style={{ borderColor: inputText ? "#b32271" : "" }}
+              onFocus={(e) => (e.target.style.borderColor = "#b32271")}
+              onBlur={(e) =>
+                (e.target.style.borderColor = inputText ? "#b32271" : "")
+              }
+              disabled={isRecording || isProcessingVoice}
             />
+            {/* Voice Button */}
             <button
-              onClick={handleSendMessage}
-              disabled={!inputText.trim()}
-              className="w-10 h-10 sm:w-12 sm:h-12 text-white rounded-full flex items-center justify-center disabled:bg-gray-400 border-b-black disabled:cursor-not-allowed transition-colors"
-              style={{ backgroundColor: !inputText.trim() ? "" : "#696969" }}
+              onClick={handleVoiceMessage}
+              disabled={isProcessingVoice}
+              className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all duration-200 ease-in-out transform hover:scale-105 active:scale-95 ${
+                isProcessingVoice ? "opacity-100 cursor-not-allowed" : ""
+              }`}
+              style={{
+                backgroundColor: isRecording
+                  ? "#b32271"
+                  : isProcessingVoice
+                  ? "#6b7280"
+                  : "#6b7280", // gray-500 as default
+              }}
               onMouseEnter={(e) => {
-                if (inputText.trim()) {
-                  e.currentTarget.style.backgroundColor = "#5a5a5a";
+                if (!isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.backgroundColor = "#696969";
+                  e.currentTarget.style.transform = "scale(1.05)"; // Scale up on hover
                 }
               }}
               onMouseLeave={(e) => {
-                if (inputText.trim()) {
-                  e.currentTarget.style.backgroundColor = "#696969";
+                if (!isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.backgroundColor = "#6b7280"; // back to gray-500
+                  e.currentTarget.style.transform = "scale(1)"; // Back to normal scale
+                }
+              }}
+              onMouseDown={(e) => {
+                if (!isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.transform = "scale(0.95)"; // Scale down on click
+                  e.currentTarget.style.backgroundColor = "#4b5563"; // Even darker on click
+                }
+              }}
+              onMouseUp={(e) => {
+                if (!isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.transform = "scale(1.05)"; // Back to hover scale
+                  e.currentTarget.style.backgroundColor = "#696969"; // Back to hover color
                 }
               }}
             >
-              <svg
-                className="w-4 h-4 sm:w-5 sm:h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                />
-              </svg>
+              {isRecording ? (
+                <FaStop className="w-4 h-4 sm:w-5 sm:h-5 text-white transition-transform duration-150" />
+              ) : (
+                <FaMicrophone className="w-4 h-4 sm:w-5 sm:h-5 text-white transition-transform duration-150" />
+              )}
+            </button>
+            {/* Send Button */}
+            <button
+              onClick={handleSendMessage}
+              disabled={!inputText.trim() || isRecording || isProcessingVoice}
+              className="w-10 h-10 sm:w-12 sm:h-12 text-white rounded-full flex items-center justify-center disabled:bg-gray-500 disabled:cursor-not-allowed transition-all duration-200 ease-in-out transform hover:scale-105 active:scale-95"
+              style={{
+                backgroundColor: "#6b7280", // Always gray-500 as default
+              }}
+              onMouseEnter={(e) => {
+                if (inputText.trim() && !isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.backgroundColor = "#696969"; // Darker on hover when enabled
+                  e.currentTarget.style.transform = "scale(1.05)"; // Slight scale up
+                }
+              }}
+              onMouseLeave={(e) => {
+                // Always return to gray-500 and normal scale when mouse leaves
+                e.currentTarget.style.backgroundColor = "#6b7280";
+                e.currentTarget.style.transform = "scale(1)";
+              }}
+              onMouseDown={(e) => {
+                if (inputText.trim() && !isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.transform = "scale(0.95)"; // Scale down on click
+                  e.currentTarget.style.backgroundColor = "#4b5563"; // Even darker on click
+                }
+              }}
+              onMouseUp={(e) => {
+                if (inputText.trim() && !isRecording && !isProcessingVoice) {
+                  e.currentTarget.style.transform = "scale(1.05)"; // Back to hover scale
+                  e.currentTarget.style.backgroundColor = "#696969"; // Back to hover color
+                }
+              }}
+            >
+              <FaPaperPlane className="w-4 h-4 sm:w-5 sm:h-5 transition-transform duration-150" />
             </button>
           </div>
+
+          {/* Recording indicator */}
+          {isRecording && (
+            <div className="mt-2 flex items-center justify-center space-x-2">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse"></div>
+                <span className="text-sm text-gray-600">Recording...</span>
+              </div>
+              <div className="flex space-x-1">
+                {Array.from({ length: 10 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-1 bg-gray-400 rounded-full transition-all duration-100"
+                    style={{
+                      height: `${Math.max(
+                        4,
+                        (audioLevel / 255) * 20 + Math.random() * 5
+                      )}px`,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

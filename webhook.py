@@ -1037,6 +1037,19 @@ async def handle_transfer_confirmation(sender_id: str, user_message: str) -> str
         amount = transfer_info["amount"]
         currency = transfer_info["currency"]
         recipient = transfer_info["recipient"]
+
+        # ADD THIS DEBUG LOG
+        logger.info({
+            "action": "TRANSFER_CONFIRMATION_DEBUG",
+            "sender_id": sender_id,
+            "user_message": user_message,
+            "is_positive": is_confirmation_positive(user_message),
+            "is_negative": is_confirmation_negative(user_message),
+            "amount": amount,
+            "currency": currency,
+            "recipient": recipient,
+            "about_to_execute": "YES" if is_confirmation_positive(user_message) else "NO"
+        })
         
         if is_confirmation_positive(user_message):
             # Existing confirmation logic...

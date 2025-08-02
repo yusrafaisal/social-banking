@@ -879,7 +879,8 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
             
             return f"""Hello {first_name}! Account confirmed! 
 
-    Welcome, you're now connected to account {masked_account}.
+    Welcome, you're now connected to
+    account {masked_account}.
 
     I can help you with:
     • Check your account balance
@@ -1418,10 +1419,18 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
             logger.error(f"Error extracting transfer context: {e}")
             return {}
         
-
     async def execute_verified_transfer(self, account_number: str, amount: float, currency: str, recipient: str, first_name: str, memory: ConversationBufferMemory) -> str:
         """Execute the transfer after OTP verification."""
         try:
+            logger.info({
+                "action": "EXECUTING_VERIFIED_TRANSFER_START",
+                "account_number": account_number,
+                "amount": amount,
+                "currency": currency,
+                "recipient": recipient,
+                "backend_url": self.backend_url
+            })
+            
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.backend_url}/transfer_money",
@@ -1435,17 +1444,34 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
                 response.raise_for_status()
                 transfer_result = response.json()
                 
-                context_state = ContextStates.TRANSFER_EXECUTED_SUCCESS if transfer_result.get("status") == StatusMessages.SUCCESS else ContextStates.TRANSFER_EXECUTED_FAILED
-                conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                logger.info({
+                    "action": "TRANSFER_API_RESPONSE",
+                    "status": transfer_result.get("status"),
+                    "result": transfer_result
+                })
                 
-                return await self.generate_natural_response(context_state, transfer_result, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
-                
+                # CRITICAL: Only report success if backend confirms success
+                if transfer_result.get("status") == StatusMessages.SUCCESS:
+                    context_state = ContextStates.TRANSFER_EXECUTED_SUCCESS
+                    conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                    return await self.generate_natural_response(context_state, transfer_result, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
+                else:
+                    context_state = ContextStates.TRANSFER_EXECUTED_FAILED
+                    conversation_history = self._get_context_summary(memory.chat_memory.messages)
+                    return await self.generate_natural_response(context_state, transfer_result, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
+                    
         except Exception as e:
-            logger.error(f"Error executing verified transfer: {e}")
+            logger.error({
+                "action": "TRANSFER_EXECUTION_FAILED",
+                "error": str(e),
+                "account_number": account_number,
+                "amount": amount,
+                "recipient": recipient
+            })
             context_state = ContextStates.ERROR_OCCURRED
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
             return await self.generate_natural_response(context_state, {"error": str(e)}, f"transfer {amount} {currency} to {recipient}", first_name, conversation_history)
-        
+     
     async def handle_transfer_confirmation_request(self, amount: float, currency: str, recipient: str, first_name: str) -> str:
         """Handle transfer confirmation request after OTP verification."""
         try:
