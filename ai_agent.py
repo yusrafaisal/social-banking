@@ -265,171 +265,144 @@ class BankingAIAgent:
             if not conversation_history or len(conversation_history.strip()) < 10:
                 return user_message  # No context to work with
             
-            # Enhanced prompt with explicit ambiguity detection
+            # Enhanced prompt with clear structure and examples
             enhanced_contextual_prompt = f"""
-            You are an advanced query resolver for banking conversations. Your PRIMARY job is to detect ambiguous transfer references that need clarification.
+            You are a banking conversation resolver. Your job is to analyze the conversation history and resolve contextual references in the current user message.
 
-            FULL CONVERSATION HISTORY:
+            CONVERSATION HISTORY:
             {conversation_history}
 
-            CURRENT CONTEXTUAL QUERY: "{user_message}"
-            
-            **STEP 1: CRITICAL AMBIGUITY DETECTION - CHECK THIS FIRST**
-            
-            Before doing ANY resolution, count vendor/transaction occurrences in the conversation history:
-            
-            1. SCAN the conversation history for vendor names (McDonald, Foodpanda, Netflix, Uber, etc.)
-            2. COUNT how many times each vendor appears in separate transactions
-            3. CHECK if current query mentions a vendor ambiguously
-            
-            **AMBIGUOUS REFERENCES TO DETECT:**
-            - "the [vendor] transaction" (when multiple exist)
-            - "the [vendor] payment" (when multiple exist)  
-            - "[vendor] transaction" (when multiple exist)
-            - "that [vendor] purchase" (when multiple exist)
-            - "the [amount] transaction" (when multiple transactions have same amount)
-            - "the [date] transaction" (when multiple transactions on same date)
-            - "the [category] transaction" (when multiple in same category)
-            
-            **BLOCKING RULE:**
-            IF conversation history shows 2+ transactions from same vendor/date/amount/category AND current query refers to "the [vendor/date/amount/category] transaction" → KEEP QUERY UNCHANGED (DO NOT RESOLVE)
-            
-            **CONCRETE EXAMPLES:**
-            
-            History shows: "McDonalds $20.33, McDonalds $10.41" (2 McDonald transactions)
-            Query: "transfer 10% of the mcdonald transaction to ahmed"
-            → RETURN EXACTLY: "transfer 10% of the mcdonald transaction to ahmed" (NO CHANGES)
-            
-            History shows: "Foodpanda $18.71, Foodpanda $24.10, Foodpanda $21.49" (3 Foodpanda)
-            Query: "10% of the foodpanda transaction to john"  
-            → RETURN EXACTLY: "10% of the foodpanda transaction to john" (NO CHANGES)
-            
-            History shows: "Netflix $15.99, Netflix $12.99" (2 Netflix transactions)
-            Query: "send 5% of the netflix payment to sarah"
-            → RETURN EXACTLY: "send 5% of the netflix payment to sarah" (NO CHANGES)
-            
-            History shows: "Transaction on July 15: $50, Transaction on July 15: $75" (2 transactions same date)
-            Query: "transfer 10% of the july 15 transaction"
-            → RETURN EXACTLY: "transfer 10% of the july 15 transaction" (NO CHANGES)
-            
-            **EXAMPLES WHERE RESOLUTION IS ALLOWED:**
-            
-            History shows: "Netflix $15.99" (only 1 Netflix)
-            Query: "5% of the netflix payment to sarah"
-            → CAN RESOLVE: "send $0.80 (5% of $15.99 Netflix payment) to sarah"
-            
-            History shows: "McDonalds $20.33, Foodpanda $18.71" (different vendors)
-            Query: "10% of the mcdonald transaction to ahmed"
-            → CAN RESOLVE: "transfer $2.03 (10% of $20.33 McDonald transaction) to ahmed"
-            
-            History shows: "McDonalds $20.33, McDonalds $10.41" (2 McDonald transactions)
-            Query: "10% of the latest mcdonald transaction to ahmed" (user specified "latest")
-            → CAN RESOLVE: "transfer $1.04 (10% of latest $10.41 McDonald transaction) to ahmed"
-            
-            **STEP 2: EXECUTION LOGIC**
-            
-            1. FIRST: Scan conversation history and count vendor occurrences
-            2. SECOND: Check if current query mentions vendor/date/amount/category ambiguously
-            3. THIRD: Apply blocking rule or proceed with resolution
-            
-            **COUNT VENDORS IN HISTORY:**
-            - McDonald: Count occurrences
-            - Foodpanda: Count occurrences  
-            - Netflix: Count occurrences
-            - Uber: Count occurrences
-            - [Any other vendors]: Count occurrences
-            
-            **CHECK CURRENT QUERY:**
-            - Does it say "the [vendor] transaction"?
-            - Does it say "the [date] transaction"?
-            - Does it say "the [amount] transaction"?
-            - Does it say "the [category] transaction"?
-            
-            **APPLY RULE:**
-            - IF vendor count ≥ 2 AND query mentions that vendor ambiguously → BLOCK (return unchanged)
-            - IF date/amount/category has multiple matches AND query is ambiguous → BLOCK (return unchanged)
-            - OTHERWISE → PROCEED with normal resolution
-            
-            **STEP 3: NORMAL RESOLUTION (only if not blocked)**
-            
-            If not blocked by ambiguity rule, then proceed with normal contextual resolution:
+            CURRENT USER MESSAGE: "{user_message}"
 
-            ADVANCED RESOLUTION RULES:
+            STEP 1: IDENTIFY THE CONVERSATION TYPE
 
-            1. MULTI-TURN CONTEXT ANALYSIS:
-            - Look across previous messages, not just the last one
-            - Track evolving context (e.g., user asked about transactions, then spending, now asking "what about that category")
-            - Identify chains of related queries and their evolution
-            - emphasize on latest entity in case of multiple references (like if 2nd last transaction talks about july and last one talks about june, then resolve to june)
+            Check what type of conversation this is:
 
-            2. REFERENCE RESOLUTION PATTERNS:
+            A) TRANSFER CLARIFICATION CONVERSATION
+            - Look for assistant messages like "I found multiple [vendor] transactions. Which one?"
+            - Look for assistant messages listing transaction options
+            - Look for assistant messages asking "Which transaction would you like?"
 
-            a) TRANSACTION REFERENCES:
-            - "which one" → find most recent transaction list
-            - "that transaction" → identify specific transaction mentioned (if unambiguous)
-            - "those amounts" → find all amounts in recent context
-            - "the expensive one" → find highest amount mentioned
+            B) TRANSFER CONFIRMATION CONVERSATION  
+            - Look for assistant messages asking "Do you want to confirm the transfer?"
+            - Look for assistant messages requesting OTP
+            - Look for assistant messages about transfer details
 
-            b) BALANCE & TRANSFER REFERENCES:
+            C) AMBIGUOUS TRANSFER REQUEST
+            - User mentions a vendor/merchant but conversation history shows multiple transactions
+            - Example: History shows 3 McDonald transactions, user says "transfer 10% of the mcdonald transaction"
+
+            D) NORMAL CONTEXTUAL CONVERSATION
+            - Regular banking conversation with contextual references
+            - User referring to "that amount", "those transactions", etc.
+
+            STEP 2: APPLY RESOLUTION RULES
+
+            **RULE A: TRANSFER CLARIFICATION RESOLUTION**
+            If Type A (Transfer Clarification) AND current message is a selection:
+
+            Selection Patterns:
+            - "17.25 one" = User selecting the $17.25 transaction
+            - "9.37 one" = User selecting the $9.37 transaction  
+            - "first one" = User selecting the first transaction
+            - "second one" = User selecting the second transaction
+            - "latest one" = User selecting the most recent transaction
+            - "May 14 one" = User selecting the May 14 transaction
+            - "the $24.10 transaction" = User selecting specific amount
+
+            Resolution Process:
+            1. Find the original transfer request in conversation history
+            2. Extract: percentage/amount, recipient, and original context
+            3. Find the selected transaction details from the clarification list
+            4. Combine into complete transfer request
+
+            Example:
+            History: "transfer 10% of the mcdonald transaction to Hamza"
+            History: "I found multiple McDonald transactions: 
+                1. June 22: $17.25 USD 
+                2. June 15: $20.89 USD"
+            which one are you referring to?
+
+            Current: "17.25 one"
+            → RESOLVE TO: "transfer 10% of the June 22 $17.25 USD McDonald transaction to Hamza"
+
+            **RULE B: TRANSFER CONFIRMATION RESOLUTION**
+            If Type B (Transfer Confirmation) AND current message is confirmation:
+
+            Confirmation Patterns:
+            - "yes" = User confirming transfer
+            - "confirm" = User confirming transfer
+            - "proceed" = User confirming transfer
+            - "ok" = User confirming transfer
+
+            Resolution Process:
+            1. Find the transfer details being confirmed
+            2. Resolve to confirmation format
+
+            Example:
+            History: "Do you want to confirm transfer of $15.54 USD to Ahmed?"
+            Current: "yes"
+            → RESOLVE TO: "yes confirm transfer $15.54 USD to Ahmed"
+
+            **RULE C: AMBIGUOUS TRANSFER BLOCKING**
+            If Type C (Ambiguous Transfer) - DO NOT RESOLVE, KEEP UNCHANGED
+
+            When to Block:
+            - Multiple transactions from same vendor AND user refers ambiguously
+            - Example: 3 McDonald transactions exist, user says "the mcdonald transaction"
+
+            Block Examples:
+            - "transfer 10% of the mcdonald transaction" (when multiple McDonalds exist)
+            - "send 5% of the netflix payment" (when multiple Netflix exist)
+
+            **RULE D: NORMAL CONTEXTUAL RESOLUTION**
+            If Type D (Normal Contextual):
+
+            Normal Resolution Patterns:
             - "that balance" → find most recent balance mentioned
             - "1% of that" → calculate percentage of most recent amount
+            - "those transactions" → find transaction list from conversation
             - "from that account" → identify account number in context
-            - "to that person" → find recipient name in conversation
 
-            c) CATEGORY & SPENDING REFERENCES:
-            - "food spending" after showing categories → reference food category data
-            - "that month" → identify timeframe from previous discussion
-            - "those expenses" → find expense list from conversation
+            STEP 3: EXECUTE RESOLUTION
 
-            3. PERCENTAGE & CALCULATION HANDLING:
-            - Always calculate percentages when referenced (EXCEPT when vendor is ambiguous)
-            - Include both percentage and calculated amount
-            - Reference the original amount being calculated from
+            Based on the type identified above:
 
-            4. MULTI-LANGUAGE SUPPORT:
-            - "inka total" = "their total" 
-            - "kitna" = "how much"
-            - "usmein se" = "from those"
-            - Convert to English while preserving intent
+            1. If Type A + Selection Pattern: Create complete transfer request
+            2. If Type B + Confirmation Pattern: Create confirmation statement  
+            3. If Type C + Ambiguous Reference: Return query UNCHANGED
+            4. If Type D: Apply normal contextual resolution
 
-            5. INCOMPLETE TRANSFER RESOLUTION:
-            Message 1: "transfer 100" → "Need recipient"
-            Message 2: "to john"
-            → Resolve: "transfer 100 to john" (combining amount + recipient)
+            STEP 4: FORMAT OUTPUT
 
-            **FINAL CHECK YOUR WORK:**
-            1. Did I count vendor occurrences correctly?
-            2. Does the current query mention a vendor/date/amount/category ambiguously?
-            3. If both true → return query unchanged
-            4. If false → proceed with resolution
-            5. Double-check my decision
+            Return ONLY the resolved query - no explanations, no reasoning, just the final standalone query.
 
-            **STEP 4: PENDING TRANSFER DETECTION**
+            CRITICAL EXAMPLES:
 
-            Check conversation history for pending transfers needing completion:
+            Example 1 (Transfer Clarification):
+            History: "transfer 15 percent of foodpanda transaction to Sophiya"
+            History: "I found multiple Foodpanda transactions. Which one? 
+            1. May 20: $10.49 USD 
+            2. May 4: $9.37 USD"
+            Current: "9.37 one"
+            Output: "transfer 15 percent of the May 4 $9.37 USD Foodpanda transaction to Sophiya"
 
-            PENDING TRANSFER PATTERNS:
-            - "I found multiple Foodpanda transactions. Which one would you like?"
-            - "Please provide your OTP"
-            - "Do you want to confirm the transfer?"
+            Example 2 (Transfer Confirmation):
+            History: "Do you want to confirm the transfer of $1.41 USD to Sophiya?"
+            Current: "yes"
+            Output: "yes confirm transfer $1.41 USD to Sophiya"
 
-            FOLLOW-UP RESOLUTION:
-            - If history shows clarification request + user gives selection → resolve as transfer completion
-            - If history shows OTP request + user gives OTP → resolve as transfer verification
-            - If history shows confirmation request + user says yes/no → resolve as transfer confirmation
+            Example 3 (Ambiguous - Keep Unchanged):
+            History: "McDonald $17.25, McDonald $20.89, McDonald $12.65"
+            Current: "transfer 10% of the mcdonald transaction to Ahmed"
+            Output: "transfer 10% of the mcdonald transaction to Ahmed"
 
-            EXAMPLES:
-            History: "Which Foodpanda transaction? 1. May 14: $24.10 2. June 19: $18.71"
-            Current: "14th my one" 
-            → RESOLVE: "transfer 10% of the May 14 $24.10 Foodpanda transaction to ahmed"
+            Example 4 (Normal Contextual):
+            History: "Your balance is $1,554.41 USD"
+            Current: "transfer 1% of that to John"
+            Output: "transfer 1% of $1,554.41 USD ($15.54) to John"
 
-            History: "Please provide OTP for transfer $2.41 to ahmed"
-            Current: "8978"
-            → RESOLVE: "OTP 8978 for transfer $2.41 to ahmed"
-
-            CRITICAL REQUIREMENT: Return ONLY the resolved standalone query - NO explanations, NO reasoning, just the final query.
-
-            RESOLVED STANDALONE QUERY:
+            RESOLVED QUERY:
             """
             
             response = llm.invoke([SystemMessage(content=enhanced_contextual_prompt)])
@@ -439,13 +412,16 @@ class BankingAIAgent:
             if resolved_query.startswith('"') and resolved_query.endswith('"'):
                 resolved_query = resolved_query[1:-1]
             
+            # Remove any explanation text that might have been added
+            if "Output:" in resolved_query:
+                resolved_query = resolved_query.split("Output:")[-1].strip()
+            
             logger.info(f"Enhanced contextual query resolved: '{user_message}' → '{resolved_query}'")
             return resolved_query
             
         except Exception as e:
             logger.error(f"Error in enhanced contextual query resolution: {e}")
-            return user_message  # Return original query if resolution fails
-
+            return user_message
 
     def _extract_banking_entities_from_history(self, conversation_history: str) -> Dict[str, Any]:
         """Extract banking entities and context from conversation history for better resolution."""
@@ -706,16 +682,16 @@ class BankingAIAgent:
         try:
             otp_prompt = f"""You are Kora, a banking assistant. A user has just had their **CNIC** verified successfully and now needs to provide an **OTP** for additional security.
 
-Your task:
-1. Explain that for additional security, they need to provide an **OTP**
-2. Tell them the **OTP** is a number between **{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits** sent to their **mobile phone**
-3. Ask them to enter their **OTP**
-4. **Bold** all important words and actions: **OTP**, **CNIC**, **security**, **mobile phone**, **digits**, **verification**
-5. Use line breaks for clarity and structure
-6. Make the next step ("please provide your OTP") stand out clearly
+            Your task:
+            1. Explain that for additional security, they need to provide an **OTP**
+            2. Tell them the **OTP** is a number between **{Limits.OTP_MIN_DIGITS}-{Limits.OTP_MAX_DIGITS} digits** sent to their **mobile phone**
+            3. Ask them to enter their **OTP**
+            4. **Bold** all important words and actions: **OTP**, **CNIC**, **security**, **mobile phone**, **digits**, **verification**
+            5. Use line breaks for clarity and structure
+            6. Make the next step ("please provide your OTP") stand out clearly
 
-Generate a natural, security-focused response asking for **OTP**, using proper bold formatting and clear structure.
-"""
+            Generate a natural, security-focused response asking for **OTP**, using proper bold formatting and clear structure.
+            """
             response = await llm.ainvoke([SystemMessage(content=otp_prompt)])
             return response.content.strip()
         except Exception as e:
@@ -899,9 +875,9 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
     def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
         """Detect intent using LLM for more flexible understanding."""
         try:
-
             intent_hint = getattr(filters, 'intent_hint', None)
             
+            # Check hint-based detection first
             if intent_hint == "transaction_list":
                 return BankingIntents.TRANSACTION_HISTORY
             elif intent_hint == "spending_total":
@@ -909,6 +885,35 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
             elif intent_hint == "balance_query":
                 return BankingIntents.BALANCE_INQUIRY
             
+            # CRITICAL FIX: Add transfer keyword detection BEFORE LLM call
+            user_lower = user_message.lower().strip()
+            
+            # Transfer keywords
+            transfer_keywords = [
+                "transfer", "send", "pay", "give", "move money", "wire",
+                "% of", "percent of", "% from", "percent from",
+                " to ", "send to", "transfer to", "pay to"
+            ]
+            
+            # Check for transfer intent based on keywords
+            if any(keyword in user_lower for keyword in transfer_keywords):
+                logger.info(f"Transfer keywords detected in: '{user_message}'")
+                return BankingIntents.TRANSFER_MONEY
+            
+            # Check for recipient patterns (to [name])
+            import re
+            if re.search(r'\bto\s+[a-zA-Z]+', user_lower):
+                logger.info(f"Recipient pattern detected in: '{user_message}'")
+                return BankingIntents.TRANSFER_MONEY
+            
+            # Check for confirmation words in transfer context
+            confirmation_words = ["yes", "yess", "confirm", "proceed", "ok", "sure"]
+            if user_lower in confirmation_words:
+                # This should be handled by conversation context
+                # For now, let LLM decide based on context
+                logger.info(f"Confirmation word detected: '{user_message}' - letting LLM analyze context")
+            
+            # Use LLM for complex cases
             response = llm.invoke([
                 SystemMessage(content=intent_prompt.format(
                     user_message=user_message,
@@ -1252,13 +1257,13 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
             return f"OTP verified! I'll now proceed with transferring {amount} {currency} to {recipient}."
         
     async def _handle_money_transfer_with_otp(self, account_number: str, user_message: str, 
-                                            first_name: str, memory: ConversationBufferMemory) -> str:
+                                        first_name: str, memory: ConversationBufferMemory) -> str:
         """Handle money transfer with OTP requirement (returns 'OTP_REQUIRED' for webhook to handle)."""
         try:
             # Get conversation history for contextual transfers
             conversation_history = self._get_context_summary(memory.chat_memory.messages)
 
-            # Enhanced transfer prompt with context
+            # FIXED: Enhanced transfer prompt with STRICT clarification rules
             enhanced_transfer_prompt = f"""
                     Extract transfer details from the query, using conversation history for context. Handle multi-turn transfer conversations.
 
@@ -1267,45 +1272,81 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
 
                     CURRENT TRANSFER REQUEST: "{user_message}"
 
-                    Rules:
-                    - If message mentions percentages of "that" or "it", calculate based on amounts in conversation history
-                    - Extract exact amount, currency, and recipient
-                    - For "1% of that $1,554.41" → amount should be 15.54, currency USD
-                    - For "transfer 10% of that PKR amount" → calculate 10% of the PKR amount mentioned
-                    - If only recipient is provided ("to ahmed abrar"), look for amount/percentage in recent conversation
-                    - If only amount is provided, look for recipient in recent conversation
-                    - Combine information from multiple recent messages to complete transfer details
+                    **CRITICAL CLARIFICATION RULE - MUST FOLLOW:**
                     
-                    **CRITICAL CLARIFICATION RULE:**
-                    - If conversation history shows multiple transactions of the same type/vendor/date AND user refers to "the [vendor/date] transaction", you MUST return a clarification request instead of calculating
-                    - Example: History shows 3 Foodpanda transactions, user says "10% of the foodpanda transaction" → Return {{"clarification_needed": true, "matching_transactions": [list], "message": "Which Foodpanda transaction?"}}
-                    - Only calculate when user specifies "the latest", "the first", "the $18.71 one", etc.
+                    1. **SCAN CONVERSATION HISTORY** for transactions from the SAME vendor/merchant
+                    2. **COUNT** how many transactions exist for that vendor
+                    3. **IF 2+ transactions from same vendor** AND user refers to "the [vendor] transaction" → **MUST ASK FOR CLARIFICATION**
+                    
+                    **CLARIFICATION REQUIRED PATTERNS:**
+                    - "the mcdonald transaction" (when multiple McDonald's exist)
+                    - "the netflix payment" (when multiple Netflix exist)  
+                    - "the uber transaction" (when multiple Uber exist)
+                    - "the foodpanda transaction" (when multiple Foodpanda exist)
+                    
+                    **CLARIFICATION NOT REQUIRED:**
+                    - "the latest mcdonald transaction" (user specified which one)
+                    - "the $17.25 mcdonald transaction" (user specified amount)
+                    - "the june 22 mcdonald transaction" (user specified date)
+                    - Only 1 transaction from that vendor exists
+                    
+                    **STEP 1: CHECK FOR CLARIFICATION NEED**
+                    
+                    Look in conversation history for vendor mentioned in current request:
+                    - If user says "mcdonald" → count McDonald's transactions
+                    - If user says "netflix" → count Netflix transactions  
+                    - If user says "uber" → count Uber transactions
+                    - If user says "foodpanda" → count Foodpanda transactions
+                    
+                    **STEP 2: APPLY STRICT RULE**
+                    
+                    IF (vendor_count >= 2 AND user_refers_ambiguously):
+                        return {{"clarification_needed": true, "matching_transactions": [list_of_matching_transactions], "message": "Which [vendor] transaction?"}}
+                    ELSE:
+                        calculate transfer normally
+                    
+                    **EXAMPLES OF CLARIFICATION REQUIRED:**
+                    
+                    History shows: 
+                    "McDonald's $17.25,
+                    McDonald's $20.89, 
+                    McDonald's $12.65"
+                    Current: "transfer 10% of the mcdonald transaction to Yusra"
+                    → {{"clarification_needed": true, "matching_transactions": [...], "message": "Which McDonald's transaction?"}}
+                    
+                    History shows: 
+                    "Foodpanda $10.49, 
+                    Foodpanda $9.37"  
+                    Current: "transfer 15% of the foodpanda transaction to John"
+                    → {{"clarification_needed": true, "matching_transactions": [...], "message": "Which Foodpanda transaction?"}}
+                    
+                    **EXAMPLES WHERE NO CLARIFICATION NEEDED:**
+                    
+                    History shows: "Netflix $15.99" (only 1 Netflix)
+                    Current: "transfer 5% of netflix to Sarah" 
+                    → Calculate normally: {{"amount": 0.80, "currency": "USD", "recipient": "Sarah"}}
+                    
+                    History shows: "McDonald's $17.25, McDonald's $20.89"
+                    Current: "transfer 10% of the latest mcdonald transaction to Yusra"
+                    → Calculate normally (user specified "latest")
+                    
+                    **STEP 3: EXTRACT MATCHING TRANSACTIONS**
+                    
+                    If clarification is needed, extract ALL matching transactions from conversation history:
+                    - Same vendor/merchant name (case-insensitive)
+                    - Include: date, description, amount, currency, type
+                    - Return in "matching_transactions" array
+                    
+                    **STEP 4: RETURN FORMAT**
+                    
+                    For clarification: {{"amount": null, "currency": null, "recipient": string, "clarification_needed": true, "matching_transactions": array, "message": "Which [vendor] transaction?"}}
+                    
+                    For normal transfer: {{"amount": number, "currency": string, "recipient": string, "clarification_needed": false, "matching_transactions": []}}
 
-                    Return JSON: {{"amount": number_or_null, "currency": string_or_null, "recipient": string_or_null, "clarification_needed": boolean, "matching_transactions": array}}
-                
-                    OTHER Transfer Examples:
-                    History: "Here's your current account balance: USD 1,554.41"
-                    Current: "ok transfer 1% of that" → {{"amount": 15.54, "currency": "USD", "recipient": null}}
-
-                    History: "transfer 1% of 1554.41 USD which is 15.54 USD"  
-                    Current: "to ahmed abrar" → {{"amount": 15.54, "currency": "USD", "recipient": "ahmed abrar"}}
-
-                    History: "send 100 USD"
-                    Current: "to john smith" → {{"amount": 100, "currency": "USD", "recipient": "john smith"}}
-
-                    History: "Assistant: I need more details. User: transfer 50 PKR"
-                    Current: "to sarah" → {{"amount": 50, "currency": "PKR", "recipient": "sarah"}}
-
-                    Multi-turn completion rules:
-                    - Look at last 3-4 conversation turns for missing transfer details
-                    - If current message only has recipient, search history for amount
-                    - If current message only has amount, search history for recipient
-                    - Prioritize most recent complete transfer attempt
-                  
-                    Return JSON: {{"amount": number, "currency": string, "recipient": string}}
-                    Set null for missing fields, but try to complete from conversation history first.
+                    **BE STRICT**: When in doubt about multiple transactions, ALWAYS ask for clarification.
                     """
-            logger.info(f"🔍 TRANSFER DEBUG - Using enhanced prompt for: {user_message}")
+            
+            logger.info(f"🔍 TRANSFER DEBUG - Using STRICT clarification prompt for: {user_message}")
 
             response = await llm.ainvoke([SystemMessage(content=enhanced_transfer_prompt)])
 
@@ -1374,8 +1415,7 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
                 return await self.generate_natural_response(context_state, data, user_message, first_name, conversation_history)
             
             # If transfer details are complete, return special signal for OTP
-            # The webhook will handle the OTP flow
-            return f"{TransferSignals.OTP_REQUIRED_PREFIX}{TransferSignals.SEPARATOR}{transfer_details['amount']}{TransferSignals.SEPARATOR}{transfer_details.get('currency', Currencies.PKR)}{TransferSignals.SEPARATOR}{transfer_details['recipient']}"
+            return f"{TransferSignals.OTP_REQUIRED_PREFIX}{TransferSignals.SEPARATOR}{transfer_details.get('amount')}{TransferSignals.SEPARATOR}{transfer_details.get('currency')}{TransferSignals.SEPARATOR}{transfer_details.get('recipient')}"
                 
         except Exception as e:
             logger.error(f"Error in money transfer with OTP: {e}")
@@ -1636,33 +1676,33 @@ Generate a natural, security-focused response asking for **OTP**, using proper b
         data_summary = self._summarize_data_for_format_analysis(data)
         
         format_analysis_prompt = f"""
-    You are a response format analyzer. Analyze the user query, available data, and context to determine the best response format.
+            You are a response format analyzer. Analyze the user query, available data, and context to determine the best response format.
 
-    USER QUERY: "{user_message}"
-    CONTEXT: {context_state}
-    DATA AVAILABLE: {data_summary}
+            USER QUERY: "{user_message}"
+            CONTEXT: {context_state}
+            DATA AVAILABLE: {data_summary}
 
-    Determine the most appropriate response format:
+            Determine the most appropriate response format:
 
-    1. **{ResponseFormats.CONCISE_ONE_LINER}**: For simple, direct questions wanting a single piece of information
-    - Examples: "What's my balance?", "How much did I spend on Netflix?", "Current balance?"
-    - When data contains single values: one balance, one amount, one simple answer
+            1. **{ResponseFormats.CONCISE_ONE_LINER}**: For simple, direct questions wanting a single piece of information
+            - Examples: "What's my balance?", "How much did I spend on Netflix?", "Current balance?"
+            - When data contains single values: one balance, one amount, one simple answer
 
-    2. **{ResponseFormats.STRUCTURED_LIST}**: For queries requesting multiple items or detailed breakdowns
-    - Examples: "Show my transactions", "List my spending by category", "Transaction history"
-    - When data contains: multiple transactions, category breakdowns, lists of items
+            2. **{ResponseFormats.STRUCTURED_LIST}**: For queries requesting multiple items or detailed breakdowns
+            - Examples: "Show my transactions", "List my spending by category", "Transaction history"
+            - When data contains: multiple transactions, category breakdowns, lists of items
 
-    3. **{ResponseFormats.DETAILED_EXPLANATION}**: For complex queries, comparisons, or when context/explanation is needed
-    - Examples: "Compare my spending", "Why is my spending high?", "Analyze my patterns"
-    - When data needs interpretation, contains errors, or requires explanation
+            3. **{ResponseFormats.DETAILED_EXPLANATION}**: For complex queries, comparisons, or when context/explanation is needed
+            - Examples: "Compare my spending", "Why is my spending high?", "Analyze my patterns"
+            - When data needs interpretation, contains errors, or requires explanation
 
-    4. **{ResponseFormats.HELPFUL_GUIDANCE}**: For error states, missing information, or clarification requests
-    - When context indicates errors, missing data, or user needs guidance
+            4. **{ResponseFormats.HELPFUL_GUIDANCE}**: For error states, missing information, or clarification requests
+            - When context indicates errors, missing data, or user needs guidance
 
-    Analyze the query intent, data complexity, and user expectation to choose the best format.
+            Analyze the query intent, data complexity, and user expectation to choose the best format.
 
-    Return ONLY one of: {ResponseFormats.CONCISE_ONE_LINER}, {ResponseFormats.STRUCTURED_LIST}, {ResponseFormats.DETAILED_EXPLANATION}, or {ResponseFormats.HELPFUL_GUIDANCE}
-    """
+            Return ONLY one of: {ResponseFormats.CONCISE_ONE_LINER}, {ResponseFormats.STRUCTURED_LIST}, {ResponseFormats.DETAILED_EXPLANATION}, or {ResponseFormats.HELPFUL_GUIDANCE}
+            """
         try:
             response = await llm.ainvoke([SystemMessage(content=format_analysis_prompt)])
             format_type = response.content.strip().upper()

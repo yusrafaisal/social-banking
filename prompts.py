@@ -495,7 +495,6 @@ transfer_prompt = PromptTemplate(
 )
 
 
-
 account_selection_prompt = PromptTemplate(
     input_variables=["user_input", "account_details"],
     template="""
