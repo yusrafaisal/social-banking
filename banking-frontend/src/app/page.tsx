@@ -278,7 +278,7 @@ export default function BankingChat() {
         {/* ...existing loading state... */}
         <header
           className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
-            isScrolled ? "bg-white/80 backdrop-blur-md" : "bg-white"
+            isScrolled ? "bg-white/60 backdrop-blur-md" : "bg-white"
           }`}
         >
           <div className="flex items-center">
@@ -324,7 +324,7 @@ export default function BankingChat() {
       {/* ...existing header code... */}
       <header
         className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
-          isScrolled ? "bg-white/80 backdrop-blur-md" : "bg-white"
+          isScrolled ? "bg-white/60 backdrop-blur-md" : "bg-white"
         }`}
       >
         <div className="flex items-center">
@@ -461,9 +461,12 @@ export default function BankingChat() {
       </div>
 
       {/* Fixed Input Area with Voice Support */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white px-3 sm:px-4 py-3 sm:py-4 z-50 border-t border-gray-200">
+      <div
+        className="fixed bottom-0 left-0 right-0 px-3 sm:px-4 py-3 sm:py-4 z-50"
+        style={{ backgroundColor: "#eee" }}
+      >
         <div className="max-w-full sm:max-w-4xl mx-auto">
-          <div className="flex items-center space-x-2 sm:space-x-3">
+          <div className="flex items-center space-x-2 sm:space-x-3 bg-white rounded-full px-3 sm:px-4 py-2 border border-gray-200">
             <input
               ref={inputRef}
               type="text"
@@ -473,7 +476,7 @@ export default function BankingChat() {
               placeholder={
                 isRecording ? "Recording..." : "Type your message here..."
               }
-              className="flex-1 px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-gray-500 rounded-full focus:outline-none transition-colors text-black"
+              className="flex-1 px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border-0 rounded-full focus:outline-none transition-colors text-black bg-transparent"
               style={{ borderColor: inputText ? "#b32271" : "" }}
               onFocus={(e) => (e.target.style.borderColor = "#b32271")}
               onBlur={(e) =>
