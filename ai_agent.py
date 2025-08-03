@@ -709,22 +709,22 @@ class BankingAIAgent:
             account_list = []
             for i, account in enumerate(accounts, 1):
                 # Mask account except last 4 digits and bold them
-                masked = f"***-***-**<b>{account[-4:]}</b>"
+                masked = f"***-***-**{account[-4:]}**"
                 account_list.append(f"{i}. {masked}")
 
             accounts_text = "\n".join(account_list)
 
             return (
-                f"Hello <b>{first_name}</b>! <b>OTP verified successfully.</b>\n\n"
-                f"<b>Please select your account:</b>\n"
+                f"Hello **{first_name}**! **OTP verified successfully.**\n\n"
+                f"**Please select your account:**\n"
                 f"{accounts_text}\n\n"
-                f"You can select by typing the <b>account number</b>, <b>last 4 digits</b>, or saying <b>'first account'</b>, <b>'second account'</b>, etc."
+                f"You can select by typing the **account number**, **last 4 digits**, or saying **'first account'**, **'second account'**, etc."
             )
 
         except Exception as e:
             logger.error(f"Error in OTP success: {e}")
             return (
-                "<b>OTP verified successfully!</b> Now please select your account by entering the <b>last 4 digits</b>."
+                "**OTP verified successfully!** Now please select your account by entering the **last 4 digits**."
             )
         
     async def handle_otp_failure(self, user_input: str, first_name: str = "") -> str:
@@ -1810,7 +1810,7 @@ class BankingAIAgent:
             1. Explain that you found multiple matching transactions
             2. List each transaction clearly with **date**, **amount**, and **currency**
             3. Ask them to specify which one they want to use
-            4. **Bold** all important information
+            4. **Use markdown formatting, NOT HTML tags**
             5. Make it easy for them to identify and select
 
             Example format:
@@ -1823,7 +1823,7 @@ class BankingAIAgent:
 
             Please specify by saying **'the first one'**, **'the $24.10 transaction'**, **'the May 14 one'**, etc."
 
-            Generate a clear clarification request with proper **bold formatting**.
+            Generate a clear clarification request using **markdown formatting** with proper line breaks.
             """
             
             try:
@@ -1860,8 +1860,8 @@ class BankingAIAgent:
 
         **CRITICAL FORMATTING RULES - ALWAYS APPLY:**
 
-        1. **BOLD FORMATTING** for important keywords and actions:
-        - **CNIC** (when requesting CNIC verification)
+        1. **MARKDOWN FORMATTING** for important keywords and actions:
+        - **CNIC** (when requesting CNIC verification) 
         - **OTP** (when requesting OTP)
         - **Account numbers** (like ***-***-1234)
         - **Important amounts** ($1,554.41, PKR 25,000)
@@ -1871,11 +1871,15 @@ class BankingAIAgent:
         - **Recipient names** when transferring money
         - **Next steps** user needs to take
 
-        2. **STRUCTURE RESPONSES** clearly:
-        - Use line breaks for readability
-        - Separate different types of information
-        - Highlight key numbers and amounts
-        - Make action items stand out
+        2a. **USE MARKDOWN, NOT HTML**:
+        - Use **text** for bold, not <b>text</b>
+        - Use proper line breaks with double newlines
+        - Use markdown tables for structured data
+
+        2b. **STRUCTURE RESPONSES** clearly:
+        - Use double line breaks (\\n\\n) for paragraph separation
+        - Use single line breaks (\\n) within lists
+        - Make action items stand out with **bold**
 
         3. **EXAMPLES OF PROPER FORMATTING:**
 
