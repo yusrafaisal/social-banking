@@ -98,7 +98,7 @@ export default function BankingChat() {
           headers: {
             "Content-Type": "multipart/form-data",
           },
-          timeout: 30000, // 30 second timeout for voice processing
+          timeout: 120000, // 120 second timeout for voice processing
         }
       );
       return res.data.reply;
