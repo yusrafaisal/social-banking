@@ -236,7 +236,8 @@ class MongoConfig:
 # ===== WEBHOOK CONFIGURATION =====
 class WebhookConfig:
     VERIFY_TOKEN = "helloworld3"
-    BACKEND_URL = "http://localhost:8000"
+    import os
+    BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080")
     FACEBOOK_API_VERSION = "v18.0"
     FACEBOOK_MESSAGES_ENDPOINT = "me/messages"
 
