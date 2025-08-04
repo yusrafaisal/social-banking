@@ -22,6 +22,9 @@ interface Message {
   type?: "text" | "voice";
 }
 
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
+
 export default function BankingChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
@@ -74,7 +77,7 @@ export default function BankingChat() {
 
   const sendToBackend = async (text: string): Promise<string> => {
     try {
-      const res = await axios.post("http://localhost:8080/api/chat", {
+      const res = await axios.post(`${BACKEND_URL}/api/chat`, {
         sender_id: senderId,
         message: text,
       });
@@ -91,16 +94,12 @@ export default function BankingChat() {
       formData.append("audio", audioBlob, "voice-message.webm");
       formData.append("sender_id", senderId);
 
-      const res = await axios.post(
-        "http://localhost:8080/api/voice",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-          timeout: 120000, // 120 second timeout for voice processing
-        }
-      );
+      const res = await axios.post(`${BACKEND_URL}/api/voice`, formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+        timeout: 120000, // 120 second timeout for voice processing
+      });
       return res.data.reply;
     } catch (error) {
       console.error("Voice backend error:", error);
