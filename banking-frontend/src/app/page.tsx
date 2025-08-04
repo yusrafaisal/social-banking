@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
@@ -213,55 +214,45 @@ export default function BankingChat() {
   };
 
   const markdownComponents = {
-    table: ({ children }: MarkdownProps) => (
+    table: ({ children }: any) => (
       <div className="overflow-x-auto my-2 sm:my-4">
         <table className="min-w-full border-collapse border border-gray-300 bg-gray-50 rounded-lg text-xs sm:text-sm">
           {children}
         </table>
       </div>
     ),
-    thead: ({ children }: MarkdownProps) => (
+    thead: ({ children }: any) => (
       <thead className="bg-gray-100">{children}</thead>
     ),
-    th: ({ children }: MarkdownProps) => (
+    th: ({ children }: any) => (
       <th className="border border-gray-300 px-2 sm:px-4 py-1 sm:py-2 text-left font-semibold text-gray-700 text-xs sm:text-sm">
         {children}
       </th>
     ),
-    td: ({ children }: MarkdownProps) => (
+    td: ({ children }: any) => (
       <td className="border border-gray-300 px-2 sm:px-4 py-1 sm:py-2 text-gray-600 text-xs sm:text-sm">
         {children}
       </td>
     ),
-    tr: ({ children }: MarkdownProps) => (
-      <tr className="hover:bg-gray-50">{children}</tr>
-    ),
-    p: ({ children }: MarkdownProps) => (
+    tr: ({ children }: any) => <tr className="hover:bg-gray-50">{children}</tr>,
+    p: ({ children }: any) => (
       <p className="mb-1 sm:mb-2 last:mb-0">{children}</p>
     ),
-    strong: ({ children }: MarkdownProps) => (
+    strong: ({ children }: any) => (
       <strong className="font-semibold text-gray-900">{children}</strong>
     ),
-    ul: ({ children }: MarkdownProps) => (
+    ul: ({ children }: any) => (
       <ul className="list-disc pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
         {children}
       </ul>
     ),
-    ol: ({ children }: MarkdownProps) => (
+    ol: ({ children }: any) => (
       <ol className="list-decimal pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
         {children}
       </ol>
     ),
-    li: ({ children }: MarkdownProps) => (
-      <li className="text-gray-700">{children}</li>
-    ),
-    code: ({
-      children,
-      className,
-    }: {
-      children: React.ReactNode;
-      className?: string;
-    }) => {
+    li: ({ children }: any) => <li className="text-gray-700">{children}</li>,
+    code: ({ children, className }: any) => {
       const isInline = !className;
       if (isInline) {
         return (
@@ -278,7 +269,7 @@ export default function BankingChat() {
         </pre>
       );
     },
-    blockquote: ({ children }: MarkdownProps) => (
+    blockquote: ({ children }: any) => (
       <blockquote className="border-l-4 border-gray-300 pl-3 sm:pl-4 italic text-gray-600 my-1 sm:my-2">
         {children}
       </blockquote>
@@ -419,7 +410,7 @@ export default function BankingChat() {
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       rehypePlugins={[rehypeRaw]}
-                      components={markdownComponents as any}
+                      components={markdownComponents}
                     >
                       {message.text}
                     </ReactMarkdown>
