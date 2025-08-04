@@ -28,10 +28,6 @@ interface MarkdownProps {
   children: React.ReactNode;
 }
 
-interface CodeProps extends MarkdownProps {
-  className?: string;
-}
-
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
 
@@ -215,66 +211,76 @@ export default function BankingChat() {
       handleSendMessage();
     }
   };
- 
+
   const markdownComponents = {
-    table: (props: any) => (
+    table: ({ children }: MarkdownProps) => (
       <div className="overflow-x-auto my-2 sm:my-4">
         <table className="min-w-full border-collapse border border-gray-300 bg-gray-50 rounded-lg text-xs sm:text-sm">
-          {props.children}
+          {children}
         </table>
       </div>
     ),
-    thead: (props: any) => (
-      <thead className="bg-gray-100">{props.children}</thead>
+    thead: ({ children }: MarkdownProps) => (
+      <thead className="bg-gray-100">{children}</thead>
     ),
-    th: (props: any) => (
+    th: ({ children }: MarkdownProps) => (
       <th className="border border-gray-300 px-2 sm:px-4 py-1 sm:py-2 text-left font-semibold text-gray-700 text-xs sm:text-sm">
-        {props.children}
+        {children}
       </th>
     ),
-    td: (props: any) => (
+    td: ({ children }: MarkdownProps) => (
       <td className="border border-gray-300 px-2 sm:px-4 py-1 sm:py-2 text-gray-600 text-xs sm:text-sm">
-        {props.children}
+        {children}
       </td>
     ),
-    tr: (props: any) => <tr className="hover:bg-gray-50">{props.children}</tr>,
-    p: (props: any) => (
-      <p className="mb-1 sm:mb-2 last:mb-0">{props.children}</p>
+    tr: ({ children }: MarkdownProps) => (
+      <tr className="hover:bg-gray-50">{children}</tr>
     ),
-    strong: (props: any) => (
-      <strong className="font-semibold text-gray-900">{props.children}</strong>
+    p: ({ children }: MarkdownProps) => (
+      <p className="mb-1 sm:mb-2 last:mb-0">{children}</p>
     ),
-    ul: (props: any) => (
+    strong: ({ children }: MarkdownProps) => (
+      <strong className="font-semibold text-gray-900">{children}</strong>
+    ),
+    ul: ({ children }: MarkdownProps) => (
       <ul className="list-disc pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
-        {props.children}
+        {children}
       </ul>
     ),
-    ol: (props: any) => (
+    ol: ({ children }: MarkdownProps) => (
       <ol className="list-decimal pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
-        {props.children}
+        {children}
       </ol>
     ),
-    li: (props: any) => <li className="text-gray-700">{props.children}</li>,
-    code: ({ children, className, ...rest }: any) => {
+    li: ({ children }: MarkdownProps) => (
+      <li className="text-gray-700">{children}</li>
+    ),
+    code: ({
+      children,
+      className,
+    }: {
+      children: React.ReactNode;
+      className?: string;
+    }) => {
       const isInline = !className;
       if (isInline) {
         return (
-          <code className="bg-gray-100 px-1 py-0.5 rounded text-xs sm:text-sm font-mono text-gray-800" {...rest}>
+          <code className="bg-gray-100 px-1 py-0.5 rounded text-xs sm:text-sm font-mono text-gray-800">
             {children}
           </code>
         );
       }
       return (
-        <pre className="bg-gray-100 p-2 sm:p-3 rounded-lg overflow-x-auto my-1 sm:my-2" {...rest}>
+        <pre className="bg-gray-100 p-2 sm:p-3 rounded-lg overflow-x-auto my-1 sm:my-2">
           <code className="text-xs sm:text-sm font-mono text-gray-800">
             {children}
           </code>
         </pre>
       );
     },
-    blockquote: (props: any) => (
-      <blockquote className="border-l-4 border-gray-300 pl-3 sm:pl-4 italic text-gray-600 my-1 sm:my-2" {...props}>
-        {props.children}
+    blockquote: ({ children }: MarkdownProps) => (
+      <blockquote className="border-l-4 border-gray-300 pl-3 sm:pl-4 italic text-gray-600 my-1 sm:my-2">
+        {children}
       </blockquote>
     ),
   };
@@ -413,7 +419,7 @@ export default function BankingChat() {
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       rehypePlugins={[rehypeRaw]}
-                      components={markdownComponents}
+                      components={markdownComponents as any}
                     >
                       {message.text}
                     </ReactMarkdown>
