@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from api_routes import router
+from fastapi.middleware.cors import CORSMiddleware
 
 # Import constants
 from constants import (
@@ -43,6 +44,19 @@ app = FastAPI(
     """,
     version="3.0.0"
 )
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://social-banking.vercel.app/",
+        "https://localhost:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 app.include_router(router)
 

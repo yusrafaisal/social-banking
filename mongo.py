@@ -23,18 +23,11 @@ logger = logging.getLogger(__name__)
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 
 try:
-    # Create MongoDB client with the Atlas connection string
+    # Create MongoDB client
     client = MongoClient(MONGODB_URI)
     
-    # Get database name from URI or use default
-    if "mongodb+srv://" in MONGODB_URI or "mongodb://" in MONGODB_URI:
-        # Extract database name from URI or use default
-        db_name = MONGODB_URI.split('/')[-1].split('?')[0] if '/' in MONGODB_URI else 'bank_database'
-        if not db_name or db_name == '':
-            db_name = 'bank_database'
-        db = client[db_name]
-    else:
-        db = client.bank_database
+    # Since your Atlas URI doesn't specify a database, explicitly use bank_database
+    db = client.bank_database
     
     # Test connection but don't fail startup if it doesn't work
     try:
@@ -44,7 +37,6 @@ try:
         print(f"Available collections: {collections}")
     except Exception as ping_error:
         logger.warning(f"⚠️ MongoDB connection test failed: {ping_error}")
-        # Don't print the full error in production to avoid exposing credentials
     
     # Initialize collections
     transactions = db.transactions
