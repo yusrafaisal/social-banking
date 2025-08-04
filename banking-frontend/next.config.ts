@@ -9,10 +9,16 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizeCss: true,
   },
-  // Optimize images
   images: {
-    domains: ['your-company-domain.com'], // Add your company domain if needed
-  },
+    remotePatterns: [
+      {
+        protocol: 'https',
+      hostname: 'your-company-domain.com',
+      port: '',
+      pathname: '/**',
+    },
+  ],
+},
 };
 
 export default nextConfig;

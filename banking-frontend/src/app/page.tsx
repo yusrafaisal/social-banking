@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
+import Image from "next/image";
 import {
   FaUser,
   FaRobot,
@@ -20,6 +21,15 @@ interface Message {
   sender: "user" | "agent";
   timestamp: Date;
   type?: "text" | "voice";
+}
+
+// Define proper types for markdown components
+interface MarkdownProps {
+  children: React.ReactNode;
+}
+
+interface CodeProps extends MarkdownProps {
+  className?: string;
 }
 
 const BACKEND_URL =
@@ -41,7 +51,6 @@ export default function BankingChat() {
   const { isRecording, startRecording, stopRecording, audioLevel } =
     useVoiceRecording();
 
-  // ...existing useEffect code...
   useEffect(() => {
     setIsClient(true);
     setSenderId(
@@ -82,8 +91,8 @@ export default function BankingChat() {
         message: text,
       });
       return res.data.reply;
-    } catch (error) {
-      console.error("Backend error:", error);
+    } catch (err) {
+      console.error("Backend error:", err);
       throw new Error("Network error — is the backend running?");
     }
   };
@@ -101,8 +110,8 @@ export default function BankingChat() {
         timeout: 120000, // 120 second timeout for voice processing
       });
       return res.data.reply;
-    } catch (error) {
-      console.error("Voice backend error:", error);
+    } catch (err) {
+      console.error("Voice backend error:", err);
       throw new Error("Voice processing error — please try again");
     }
   };
@@ -132,7 +141,8 @@ export default function BankingChat() {
         type: "text",
       };
       setMessages((prev) => [...prev, agentMsg]);
-    } catch (error) {
+    } catch (err) {
+      console.error("Send message error:", err);
       const errMsg: Message = {
         id: Date.now() + 1,
         text: "Network error — is the backend running?",
@@ -175,7 +185,8 @@ export default function BankingChat() {
           };
           setMessages((prev) => [...prev, agentMsg]);
         }
-      } catch (error) {
+      } catch (err) {
+        console.error("Voice message error:", err);
         const errMsg: Message = {
           id: Date.now() + 1,
           text: "Voice processing error — please try typing your message",
@@ -192,8 +203,8 @@ export default function BankingChat() {
       // Start recording
       try {
         await startRecording();
-      } catch (error) {
-        console.error("Failed to start recording:", error);
+      } catch (err) {
+        console.error("Failed to start recording:", err);
         alert("Could not access microphone. Please check permissions.");
       }
     }
@@ -204,66 +215,66 @@ export default function BankingChat() {
       handleSendMessage();
     }
   };
-
+ 
   const markdownComponents = {
-    table: ({ children }: any) => (
+    table: (props: any) => (
       <div className="overflow-x-auto my-2 sm:my-4">
         <table className="min-w-full border-collapse border border-gray-300 bg-gray-50 rounded-lg text-xs sm:text-sm">
-          {children}
+          {props.children}
         </table>
       </div>
     ),
-    thead: ({ children }: any) => (
-      <thead className="bg-gray-100">{children}</thead>
+    thead: (props: any) => (
+      <thead className="bg-gray-100">{props.children}</thead>
     ),
-    th: ({ children }: any) => (
+    th: (props: any) => (
       <th className="border border-gray-300 px-2 sm:px-4 py-1 sm:py-2 text-left font-semibold text-gray-700 text-xs sm:text-sm">
-        {children}
+        {props.children}
       </th>
     ),
-    td: ({ children }: any) => (
+    td: (props: any) => (
       <td className="border border-gray-300 px-2 sm:px-4 py-1 sm:py-2 text-gray-600 text-xs sm:text-sm">
-        {children}
+        {props.children}
       </td>
     ),
-    tr: ({ children }: any) => <tr className="hover:bg-gray-50">{children}</tr>,
-    p: ({ children }: any) => (
-      <p className="mb-1 sm:mb-2 last:mb-0">{children}</p>
+    tr: (props: any) => <tr className="hover:bg-gray-50">{props.children}</tr>,
+    p: (props: any) => (
+      <p className="mb-1 sm:mb-2 last:mb-0">{props.children}</p>
     ),
-    strong: ({ children }: any) => (
-      <strong className="font-semibold text-gray-900">{children}</strong>
+    strong: (props: any) => (
+      <strong className="font-semibold text-gray-900">{props.children}</strong>
     ),
-    ul: ({ children }: any) => (
+    ul: (props: any) => (
       <ul className="list-disc pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
-        {children}
+        {props.children}
       </ul>
     ),
-    ol: ({ children }: any) => (
+    ol: (props: any) => (
       <ol className="list-decimal pl-4 sm:pl-5 mb-1 sm:mb-2 space-y-1">
-        {children}
+        {props.children}
       </ol>
     ),
-    li: ({ children }: any) => <li className="text-gray-700">{children}</li>,
-    code: ({ children, className }: any) => {
+    li: (props: any) => <li className="text-gray-700">{props.children}</li>,
+    code: ({ children, className, ...rest }: any) => {
       const isInline = !className;
       if (isInline) {
         return (
-          <code className="bg-gray-100 px-1 py-0.5 rounded text-xs sm:text-sm font-mono text-gray-800">
+          <code className="bg-gray-100 px-1 py-0.5 rounded text-xs sm:text-sm font-mono text-gray-800" {...rest}>
             {children}
           </code>
         );
       }
       return (
-        <pre className="bg-gray-100 p-2 sm:p-3 rounded-lg overflow-x-auto my-1 sm:my-2">
+        <pre className="bg-gray-100 p-2 sm:p-3 rounded-lg overflow-x-auto my-1 sm:my-2" {...rest}>
           <code className="text-xs sm:text-sm font-mono text-gray-800">
             {children}
           </code>
         </pre>
       );
     },
-    blockquote: ({ children }: any) => (
-      <blockquote className="border-l-4 border-gray-300 pl-3 sm:pl-4 italic text-gray-600 my-1 sm:my-2">
-        {children}
+    blockquote: (props: any) => (
+      <blockquote className="border-l-4 border-gray-300 pl-3 sm:pl-4 italic text-gray-600 my-1 sm:my-2" {...props}>
+        {props.children}
       </blockquote>
     ),
   };
@@ -274,7 +285,6 @@ export default function BankingChat() {
         className="min-h-screen flex flex-col"
         style={{ backgroundColor: "#eee" }}
       >
-        {/* ...existing loading state... */}
         <header
           className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
             isScrolled ? "bg-white/60 backdrop-blur-md" : "bg-white"
@@ -282,9 +292,11 @@ export default function BankingChat() {
         >
           <div className="flex items-center">
             <div className="w-20 h-20 sm:w-40 sm:h-40 flex items-center justify-center">
-              <img
+              <Image
                 src="/avz-logo.png"
                 alt="Avanza Logo"
+                width={160}
+                height={160}
                 className="w-20 h-20 sm:w-40 sm:h-40 object-contain"
               />
             </div>
@@ -320,7 +332,6 @@ export default function BankingChat() {
       className="min-h-screen flex flex-col"
       style={{ backgroundColor: "#eee" }}
     >
-      {/* ...existing header code... */}
       <header
         className={`fixed top-0 left-0 right-0 h-16 sm:h-20 shadow-md flex items-center justify-between px-3 sm:px-6 z-50 transition-all duration-300 ${
           isScrolled ? "bg-white/60 backdrop-blur-md" : "bg-white"
@@ -328,9 +339,11 @@ export default function BankingChat() {
       >
         <div className="flex items-center">
           <div className="w-20 h-20 sm:w-40 sm:h-40 flex items-center justify-center">
-            <img
+            <Image
               src="/avz-logo.png"
               alt="Avanza Logo"
+              width={160}
+              height={160}
               className="w-20 h-20 sm:w-40 sm:h-40 object-contain"
             />
           </div>
