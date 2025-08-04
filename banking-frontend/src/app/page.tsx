@@ -466,7 +466,7 @@ export default function BankingChat() {
         style={{ backgroundColor: "#eee" }}
       >
         <div className="max-w-full sm:max-w-4xl mx-auto">
-          <div className="flex items-center space-x-2 sm:space-x-3 bg-white rounded-full px-3 sm:px-4 py-2 border border-gray-200">
+          <div className="flex items-center space-x-2 sm:space-x-3 bg-white rounded-full px-3 sm:px-4 py-2 border border-gray-500">
             <input
               ref={inputRef}
               type="text"
