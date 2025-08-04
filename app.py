@@ -20,39 +20,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Enhanced Banking AI Assistant - Full Authentication & Context System",
-    description=f"""
-    Advanced CNIC-based banking assistant with comprehensive authentication and intelligent context management.
-    
-    Features:
-    • CNIC Verification + OTP Authentication
-    • Smart Account Selection (USD/PKR, 1st/2nd, Last 4 digits)
-    • Enhanced Transfer Flow (OTP + Confirmation)
-    • Banking Context Filtering (Politely declines non-banking queries)
-    • Intelligent Context Memory System
-    • Session Restart Functionality (Page refresh simulation)
-    • Natural Language Processing with LangChain
-    • Varied Response Generation (No repetitive patterns)
-    
-    Authentication Flow: CNIC → OTP → Smart Account Selection → Full Banking Access
-    Transfer Flow: Details → OTP → Confirmation → Execution
-    Context Management: Multi-layer memory with intelligent reference resolution
-    
-    Verification Stages:
-    • {VerificationStages.NOT_VERIFIED}: Initial state
-    • {VerificationStages.CNIC_VERIFIED}: CNIC verified, awaiting OTP
-    • {VerificationStages.OTP_VERIFIED}: OTP verified, awaiting account selection
-    • {VerificationStages.ACCOUNT_SELECTED}: Fully authenticated
-    • {VerificationStages.TRANSFER_OTP_PENDING}: Transfer OTP required
-    • {VerificationStages.TRANSFER_CONFIRMATION_PENDING}: Transfer confirmation required
-    
-    Banking Intents:
-    • {BankingIntents.BALANCE_INQUIRY}: Check account balance
-    • {BankingIntents.TRANSACTION_HISTORY}: View transaction history
-    • {BankingIntents.SPENDING_ANALYSIS}: Analyze spending patterns
-    • {BankingIntents.CATEGORY_SPENDING}: Category-based spending analysis
-    • {BankingIntents.TRANSFER_MONEY}: Money transfer operations
-    • {BankingIntents.GENERAL}: General banking assistance
-    """,
+    description="Advanced CNIC-based banking assistant with comprehensive authentication.",
     version="3.0.0"
 )
 
@@ -62,8 +30,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://social-banking.vercel.app",  # Remove trailing slash
-        "http://localhost:3000"
+        "https://social-banking.vercel.app",  # Your Vercel URL
+        "http://localhost:3000",
+        "https://*.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -75,7 +44,22 @@ class ChatMsg(BaseModel):
     sender_id: str
     message: str
 
-# Add chat endpoints
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "message": "Kora AI Banking Assistant API",
+        "status": "running",
+        "version": "3.0.0",
+        "endpoints": {
+            "chat": "/api/chat",
+            "voice": "/api/voice", 
+            "health": "/health",
+            "docs": "/docs"
+        }
+    }
+
+# Chat endpoints (from chat_api.py)
 @app.post("/api/chat")
 async def chat(msg: ChatMsg):
     logger.info({"react_chat": msg.dict()})
@@ -91,35 +75,22 @@ async def handle_voice_message(
     try:
         logger.info(f"🎤 Received voice message from {sender_id}")
         
-        # Create unique filename to avoid conflicts
         current_time = int(time.time())
         audio_file_path = f"temp_audio_web_{sender_id}_{current_time}.webm"
         
         try:
-            # Save uploaded file
             async with aiofiles.open(audio_file_path, 'wb') as audio_file:
                 content = await audio.read()
                 await audio_file.write(content)
             
-            logger.info(f"🎤 Saved audio file: {audio_file_path} ({len(content)} bytes)")
-            
-            # Transcribe using OpenAI Whisper
             transcription = await transcribe_audio_file(audio_file_path)
-            logger.info(f"🎤 Transcribed: '{transcription}'")
-            
-            # Process transcribed text through existing pipeline
             reply = await process_multilingual_message(sender_id, transcription)
             
             return {"reply": reply, "transcription": transcription}
             
         finally:
-            # Clean up audio file
-            try:
-                if os.path.exists(audio_file_path):
-                    os.remove(audio_file_path)
-                    logger.info(f"🗑️ Cleaned up: {audio_file_path}")
-            except Exception as cleanup_error:
-                logger.error(f"Cleanup error: {cleanup_error}")
+            if os.path.exists(audio_file_path):
+                os.remove(audio_file_path)
         
     except Exception as e:
         logger.error(f"Voice processing error: {e}")
@@ -150,7 +121,7 @@ async def health_check():
         }
     }
 
-# Include existing API routes
+# Include existing API routes (webhook, etc.)
 app.include_router(router)
 
 if __name__ == "__main__":
