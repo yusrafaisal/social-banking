@@ -30,7 +30,7 @@ interface MarkdownProps {
 }
 
 const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8081";
 
 export default function BankingChat() {
   const [messages, setMessages] = useState<Message[]>([]);
