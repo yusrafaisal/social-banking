@@ -1,5 +1,5 @@
 from langdetect import detect
-from googletrans import Translator, LANGUAGES
+from deep_translator import GoogleTranslator
 import logging
 from dotenv import load_dotenv
 import os
@@ -14,9 +14,33 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Define LANGUAGES dictionary since we're not importing from googletrans
+LANGUAGES = {
+    'en': 'english',
+    'ur': 'urdu',
+    'es': 'spanish',
+    'fr': 'french',
+    'de': 'german',
+    'ar': 'arabic',
+    'pt': 'portuguese',
+    'it': 'italian',
+    'ru': 'russian',
+    'ja': 'japanese',
+    'ko': 'korean',
+    'zh': 'chinese',
+    'hi': 'hindi',
+    'tr': 'turkish',
+    'nl': 'dutch',
+    'pl': 'polish',
+    'sv': 'swedish',
+    'da': 'danish',
+    'no': 'norwegian',
+    'fi': 'finnish'
+}
+
 class TranslationService:
     def __init__(self):
-        self.translator = Translator()
+        # No need to initialize GoogleTranslator here - we'll create instances as needed
         
         # Initialize OpenAI client only if API key is available
         try:
@@ -83,9 +107,9 @@ class TranslationService:
                             english_word_count += 1
                 
                 english_percentage = english_word_count / total_words
-                
-                # If 80% or more words are English, classify as English
-                if english_percentage >= 0.8:
+
+                # If 50% or more words are English, classify as English
+                if english_percentage >= 0.5:
                     logger.info(f"STRICT ENGLISH CHECK: {english_percentage:.2%} English words detected, classifying as English: '{text}'")
                     return Languages.ENGLISH
 
@@ -253,10 +277,13 @@ class TranslationService:
             return self.translate_with_google(text, source_lang, target_lang)
     
     def translate_with_google(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Fallback Google translation."""
+        """Fallback Google translation using deep-translator."""
         try:
-            result = self.translator.translate(text, src=source_lang, dest=target_lang)
-            return result.text
+            # Create GoogleTranslator instance with source and target languages
+            translator = GoogleTranslator(source=source_lang, target=target_lang)
+            result = translator.translate(text)
+            logger.info(f"Google translated '{text[:50]}...' from {source_lang} to {target_lang}")
+            return result
         except Exception as e:
             logger.error(f"Google translation failed: {e}")
             return text
@@ -371,4 +398,4 @@ class TranslationService:
         return self.detect_language_smart(text)
 
 # Global instance
-translation_service = TranslationService()
+translation_service = TranslationService()  
