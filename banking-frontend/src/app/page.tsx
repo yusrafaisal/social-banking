@@ -28,9 +28,8 @@ interface Message {
 interface MarkdownProps {
   children: React.ReactNode;
 }
-
 const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 export default function BankingChat() {
   const [messages, setMessages] = useState<Message[]>([]);
