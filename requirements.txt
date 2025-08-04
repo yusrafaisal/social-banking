@@ -14,3 +14,8 @@ google-auth-oauthlib==1.1.0
 google-auth-httplib2==0.1.1
 speechrecognition==3.10.0
 pydub==0.25.1
+langchain
+langchain-openai
+langchain-community
+oauth2client
+pydantic
